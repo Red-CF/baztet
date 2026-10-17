@@ -80,9 +80,11 @@ impl BazelRunner {
         let mut argv: Vec<String> = vec![];
         common_flags(&mut argv);
         argv.extend(pv.build_flags.iter().cloned());
-        argv.extend(spec.labels.iter().cloned());
         let bep_file = temp_bep_file();
+        // BEP flags must come BEFORE the target label: everything after the
+        // first positional is passed to the executed binary
         bep_flags(&bep_file, &mut argv);
+        argv.extend(spec.labels.iter().cloned());
         argv.extend(spec.extra_args.iter().cloned());
 
         let mut cmd = tokio::process::Command::new(&self.binary);
@@ -293,7 +295,10 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 in_case = false;
             }
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(e) => {
+                eprintln!("[baztet] junit xml truncated/unparsable near {}: {e}", reader.buffer_position());
+                break;
+            }
             _ => {}
         }
     }
@@ -402,19 +407,21 @@ pub fn test_cases_from_bep(
 }
 
 fn group_by_label(bep: &BepOutput) -> Vec<(String, Vec<String>)> {
+    // flaky tests re-run: only the LAST attempt's xml reflects the final
+    // result; attempt 1 failures would otherwise be reported as active
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
-    for summary in &bep.test_results {
-        // one xml per attempt; keep order
+    for summary in bep.test_results.iter().rev() {
+        if out.iter().any(|(l, _)| *l == summary.label) {
+            continue;
+        }
         if let Some(xml) = &summary.xml {
-            let rel = xml.relative_path();
-            match out.iter_mut().find(|(l, _)| *l == summary.label) {
-                Some((_, paths)) => paths.push(rel),
-                None => out.push((summary.label.clone(), vec![rel])),
-            }
+            out.push((summary.label.clone(), vec![xml.relative_path()]));
         }
     }
+    out.reverse();
     out
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -471,6 +478,34 @@ mod tests {
             r#"<configuration><blaze-settings blaze-command=""><blaze-target>//a:b</blaze-target></blaze-settings></configuration>"#
         )
         .is_none());
+    }
+
+    #[test]
+    fn last_attempt_wins_in_reports() {
+        use baztet_bep::{BepFile, TestResultDetail};
+        let bep = BepOutput {
+            test_results: vec![
+                // flaky rerun: attempt 1 failed, attempt 2 passed
+                TestResultDetail {
+                    label: "//a:t".into(),
+                    status: "FAILED".into(),
+                    cached_locally: false,
+                    xml: Some(BepFile { path_prefix: vec![], name: "a/first/test.xml".into() }),
+                    log: None,
+                },
+                TestResultDetail {
+                    label: "//a:t".into(),
+                    status: "PASSED".into(),
+                    cached_locally: false,
+                    xml: Some(BepFile { path_prefix: vec![], name: "a/second/test.xml".into() }),
+                    log: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let groups = group_by_label(&bep);
+        // only the LAST attempt's xml is reported
+        assert_eq!(groups, [("//a:t".to_string(), vec!["a/second/test.xml".to_string()])]);
     }
 
     #[test]
