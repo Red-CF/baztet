@@ -104,6 +104,7 @@ dependencies = [
  "baztet-snapshot",
  "camino",
  "prost",
+ "prost-reflect",
  "prost-types",
  "serde",
  "serde_json",

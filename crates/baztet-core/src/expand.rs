@@ -19,7 +19,7 @@ pub fn expand_directory_targets(pv: &ProjectView, workspace_root: &str) -> Vec<S
         return vec![];
     }
 
-    let mut excludes: HashSet<&str> = pv
+    let excludes: HashSet<&str> = pv
         .directories
         .entries
         .iter()
@@ -80,10 +80,9 @@ fn is_package_dir(dir: &Path) -> bool {
 }
 
 fn pkg_to_spec(pkg: &str) -> String {
-    if pkg.is_empty() {
-        "//:all".to_string()
-    } else {
-        format!("//{pkg}:all")
+    match pkg.trim_matches('.') {
+        "" => "//:all".to_string(),
+        pkg => format!("//{pkg}:all"),
     }
 }
 

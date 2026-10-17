@@ -21,6 +21,8 @@ pub enum BazelError {
     Spawn(#[from] std::io::Error),
     #[error("failed to decode proto stream: {0}")]
     Decode(String),
+    #[error("{0}")]
+    Other(String),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +66,28 @@ impl BazelRunner {
             ));
         }
         Ok(crate::workspace::parse_info(&text))
+    }
+
+    /// Blocking variant of [`run_simple`] for short helper commands.
+    pub fn run_simple_blocking(
+        &self,
+        command: &str,
+        args: &[String],
+    ) -> Result<(i32, String, String), BazelError> {
+        std::process::Command::new(&self.binary)
+            .current_dir(&self.workspace_root)
+            .arg(command)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map(|out| {
+                (
+                    out.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&out.stdout).into_owned(),
+                    String::from_utf8_lossy(&out.stderr).into_owned(),
+                )
+            })
+            .map_err(BazelError::Spawn)
     }
 
     /// Run a bazel command to completion; return (exit_code, stdout, stderr).
