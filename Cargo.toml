@@ -18,7 +18,7 @@ homepage = "https://github.com/Red-CF/baztet"
 
 [workspace.dependencies]
 prost = "0.13"
-prost-types = "0.13"
+prost-types = "0.14"
 prost-build = "0.13"
 prost-reflect = { version = "0.16", features = ["text-format"] }
 protoc-bin-vendored = "3"

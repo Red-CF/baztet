@@ -105,7 +105,7 @@ dependencies = [
  "camino",
  "prost 0.13.5",
  "prost-reflect",
- "prost-types 0.13.5",
+ "prost-types 0.14.4",
  "quick-xml",
  "serde",
  "serde_json",
@@ -129,7 +129,7 @@ dependencies = [
  "prost 0.13.5",
  "prost-build",
  "prost-reflect",
- "prost-types 0.13.5",
+ "prost-types 0.14.4",
  "protoc-bin-vendored",
 ]
 
