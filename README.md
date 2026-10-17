@@ -48,10 +48,20 @@ Bazel itself dominates sync and build wall-clock time. baztet's wins are
 process-level: no JVM/IDE startup, streaming proto decoding (no giant lists
 in heap), parallel aspect-output parsing, and one static binary.
 
+## Install
+
+```sh
+cargo install baztet
+```
+
+`baztet` es el único comando público: un binario con toda la funcionalidad.
+Los demás crates de este workspace (`baztet-core`, `baztet-protos`, ...)
+son dependencias internas de implementación y no hay que instalarlos a mano.
+
 ## Building
 
 ```sh
-cargo build --release
+cargo build --release   # o `cargo install --path crates/baztet` local
 ```
 
 Requirements: Rust; bazel 8/9 on PATH for running against a workspace.
