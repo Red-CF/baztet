@@ -11,6 +11,9 @@ jobs:
   # only real vulnerabilities fail the check
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
@@ -41,7 +44,7 @@ jobs:
       - run: |
           rustup component add llvm-tools-preview
           cargo install cargo-llvm-cov
-          cargo llvm-cov --all-features --exclude baztet --lcov --output-path lcov.info
+          cargo llvm-cov --workspace --all-features --exclude baztet --lcov --output-path lcov.info
       - name: update gh-pages badge
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -58,14 +61,15 @@ jobs:
           git -C ghp -c user.name=Red-CF -c user.email=crojasfer31@gmail.com commit -q -m "coverage badge: $PCT%" --allow-empty
           git -C ghp push -q origin gh-pages
 
-  # integration tests need a real bazel 9; run them on the platforms we ship
+  # unit tests on one macOS (arm64) + Windows; Linux is covered by the
+  # coverage job. Two archs bought nothing in tests (no arch-specific code):
+  # the release matrix below still ships native binaries for intel AND arm64.
   test:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14 # arm64
-          - os: macos-13 # intel
+          - os: macos-14
           - os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:

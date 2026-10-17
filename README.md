@@ -103,6 +103,26 @@ KB for a thousand-target scope). Incremental by default:
 
 `--fresh` forces a full re-query; `--fast` skips the aspect phase.
 
+## Performance
+
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine) against a
+real Bazel 9 workspace (~756 targets); full methodology and numbers in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md), reproducible with
+`scripts/bench-real.sh`:
+
+| path | time |
+|---|---|
+| `sync --fresh` (cold, full query + aspect) | ~53 s — ~40 s of that is Bazel's own analysis |
+| `sync` after a BUILD edit | ~46 s (re-query, intentional) |
+| `sync` with nothing changed | **~0.7 s** |
+| `targets` (756 rows) | **~15 ms** |
+| decode 200k target frames (`baztet bench`) | ~15 ms |
+| snapshot roundtrip, 10k targets | ~5 ms |
+
+Honest note: Bazel itself dominates sync wall-clock. baztet's wins are
+process-level: no IDE/JVM boot, streaming proto decode (near-constant
+memory), and the reuse ladder — identical inputs never touch Bazel.
+
 ## Status
 
 Sync (query + aspect), execution (build/test/run/coverage), run-config

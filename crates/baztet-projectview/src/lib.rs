@@ -545,19 +545,12 @@ directories:
     -excluded/dir
 ";
 
-    fn apply_all(mut pv: ProjectView, raw: &Raw) -> ProjectView {
-        for (key, entries) in &raw.list_entries {
-            apply_list(&mut pv, key, entries).unwrap();
-        }
-        pv
-    }
-
     #[test]
     fn raw_parse_sections() {
         let raw = Raw::parse(FULL).unwrap();
         assert_eq!(raw.imports.len(), 2);
-        assert_eq!(raw.imports[0].optional, false);
-        assert_eq!(raw.imports[1].optional, true);
+        assert!(!raw.imports[0].optional);
+        assert!(raw.imports[1].optional);
         let mut pv = ProjectView::default();
         for (key, entries) in &raw.list_entries {
             apply_list(&mut pv, key, entries).unwrap();
@@ -571,8 +564,8 @@ directories:
         assert!(pv.derive_targets_from_directories());
         let dirs = &pv.directories.entries;
         assert_eq!(dirs[0].as_target(), "//a/b:all");
-        assert_eq!(dirs[0].exclude, false);
-        assert_eq!(dirs[1].exclude, true);
+        assert!(!dirs[0].exclude);
+        assert!(dirs[1].exclude);
     }
 
     #[test]

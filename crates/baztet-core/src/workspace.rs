@@ -34,7 +34,7 @@ pub struct BazelInfo {
 impl BazelInfo {
     pub fn bazel_version(&self) -> Option<&str> {
         let release = self.release.strip_prefix("release")?;
-        release.trim().split_whitespace().next()
+        release.split_whitespace().next()
     }
 }
 

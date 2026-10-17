@@ -229,10 +229,11 @@ pub fn batch_specs(specs: &[String], pv: &ProjectView) -> std::collections::VecD
 /// Query one batch; on heap OOM from bazel (exit 1 with OOM text), split
 /// the batch in half and query BOTH halves (BuildBatchingService halving);
 /// dropping the tail of a halved batch was a bug.
-fn query_batch<'a>(
-    runner: &'a BazelRunner,
-    batch: &'a [String],
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<blaze_query::Target>, i32, String), BazelError>> + Send + 'a>> {
+type BatchResult = Result<(Vec<blaze_query::Target>, i32, String), BazelError>;
+type BatchFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = BatchResult> + Send + 'a>>;
+
+fn query_batch<'a>(runner: &'a BazelRunner, batch: &'a [String]) -> BatchFuture<'a> {
     Box::pin(query_batch_impl(runner, batch))
 }
 
@@ -408,7 +409,7 @@ async fn fetch_configurations(
 /// and mtime as the last sync) are reused from the existing snapshot.
 fn merge_ide_infos(runner: &BazelRunner, output: &BepOutput, snapshot: &mut Snapshot) {
     let execution_root = runner.info.execution_root.clone();
-    for (key, _groups) in &output.target_outputs {
+    for key in output.target_outputs.keys() {
         let (label, configuration) = (&key.label, &key.configuration);
         let files = output.files_for_target_group(key, baztet_bep::OUTPUT_GROUP_INFO);
         for file in &files {
@@ -497,10 +498,7 @@ mod tests {
             string_list_value: srcs.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }];
-        if excluded {
-            // the exclude check keys on the rule name; simulate via label
-            r.name = format!("{name}");
-        }
+        let _ = excluded; // excludes are filtered by name upstream of the graph
         blaze_query::Target {
             r#type: Discriminator::Rule as i32,
             rule: Some(r),
@@ -582,8 +580,8 @@ mod tests {
     #[test]
     fn aspect_output_meta_contract() {
         // unchanged path+mtime -> already fresh (not "newer"); anything else re-parses
-        assert!(!file_is_newer(Some(std::time::Duration::new(1700_000_000, 0)), "bazel-out/x/f.txt", Some(&"bazel-out/x/f.txt@1700000000".to_string())));
-        assert!(file_is_newer(Some(std::time::Duration::new(1700_000_001, 0)), "bazel-out/x/f.txt", Some(&"bazel-out/x/f.txt@1700000000".to_string())));
+        assert!(!file_is_newer(Some(std::time::Duration::new(1_700_000_000, 0)), "bazel-out/x/f.txt", Some(&"bazel-out/x/f.txt@1700000000".to_string())));
+        assert!(file_is_newer(Some(std::time::Duration::new(1_700_000_001, 0)), "bazel-out/x/f.txt", Some(&"bazel-out/x/f.txt@1700000000".to_string())));
         assert!(file_is_newer(Some(std::time::Duration::new(1, 0)), "bazel-out/x/CHANGED.txt", Some(&"bazel-out/x/OLD.txt@1700000000".to_string())));
         // no meta (first sync) -> newer
         assert!(file_is_newer(Some(std::time::Duration::new(1, 0)), "a", None));
@@ -592,11 +590,9 @@ mod tests {
 
     #[test]
     fn fingerprint_stable_and_sensitive() {
-        use std::collections::BTreeSet;
-        let mut pv: ProjectView = Default::default();
+        let mut pv = ProjectView::default();
         let specs = vec!["//:all".to_string()];
-        let mut info = BazelInfo::default();
-        info.release = "release 9.2.0".into();
+        let info = BazelInfo { release: "release 9.2.0".into(), ..Default::default() };
         let f1 = sync_fingerprint(&specs, &pv, &fake(&info));
         let f2 = sync_fingerprint(&specs, &pv, &fake(&info));
         assert_eq!(f1, f2);
