@@ -65,17 +65,15 @@ fn consume_frames(buf: &mut Vec<u8>) -> usize {
     use baztet_protos::blaze_query;
     let mut count = 0usize;
     let mut pos = 0usize;
-    loop {
-        let Some(mut len) = read_varint(buf, &mut pos) else { break };
+    while let Some(mut len) = read_varint(buf, &mut pos) {
         if buf.len() < pos + len {
             break;
         }
-        if let Ok(_t) = blaze_query::Target::decode(&buf[pos..pos + len]) {
-            pos += len;
-            count += 1;
-        } else {
+        if blaze_query::Target::decode(&buf[pos..pos + len]).is_err() {
             break;
         }
+        pos += len;
+        count += 1;
         let _ = &mut len;
     }
     if pos > 0 {
@@ -99,7 +97,7 @@ fn read_varint(buf: &[u8], pos: &mut usize) -> Option<usize> {
             return None;
         }
     }
-    Some(usize::try_from(len).ok()?)
+    usize::try_from(len).ok()
 }
 
 fn bench_snapshot() -> Duration {
