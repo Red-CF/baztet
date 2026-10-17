@@ -28,6 +28,20 @@ baztet coverage [labels]     # lcov report paths
 baztet recipes [--run NAME]  # imported run configs (.bazel/*.xml -> command, target, env)
 ```
 
+## M4 extras
+
+- **Incremental sync**: unchanged project view + unchanged BUILD files →
+  snapshot reused as-is (sub-second re-sync). Aspect outputs reused per-file
+  by path+mtime.
+- **Sharding**: `shard_sync: true` + `target_shard_size: N` batch the query
+  lexicographically with OOM-halving on `java heap` failures.
+- **Configurations**: `bazel config --dump_all --output=json` with BEP
+  fallback.
+- **Doctor**: `baztet doctor` checks bazel, workspace, project view,
+  snapshot, aspect deployment.
+- **Bench**: `baztet bench --targets N` — e.g. 200k frames decode in ~15 ms,
+  10k-target snapshot roundtrip ~5 ms.
+
 ## Honest performance note
 
 Bazel itself dominates sync and build wall-clock time. baztet's wins are
