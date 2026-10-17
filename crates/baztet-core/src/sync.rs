@@ -9,17 +9,15 @@ use baztet_snapshot::{Snapshot, TargetGraph};
 use baztet_protos::blaze_query;
 
 use crate::bazel::{BazelError, BazelRunner};
+use crate::expand::{expand_directory_targets, label_is_excluded};
 
-/// Target specs passed to `bazel query`, in project-view order.
-pub fn target_specs(pv: &ProjectView) -> Vec<String> {
+/// Target specs passed to `bazel query`, in project-view order: explicit
+/// `targets:` entries (bazel query resolves wildcards) plus every package
+/// found under the `directories:` entries when
+/// `derive_targets_from_directories` is enabled.
+pub fn target_specs(pv: &ProjectView, workspace_root: &str) -> Vec<String> {
     let mut specs = pv.targets.includes.clone();
-    if pv.derive_targets_from_directories() {
-        for entry in &pv.directories.entries {
-            if !entry.exclude {
-                specs.push(entry.as_target());
-            }
-        }
-    }
+    specs.extend(expand_directory_targets(pv, workspace_root));
     // dedupe, keep order
     let mut seen = std::collections::HashSet::new();
     specs.retain(|s| seen.insert(s.clone()));
@@ -45,7 +43,8 @@ pub fn query_expression(specs: &[String]) -> String {
 
 /// Run phase-1 sync and build the query snapshot.
 pub async fn query_sync(runner: &BazelRunner, pv: &ProjectView) -> Result<Snapshot, BazelError> {
-    let specs = target_specs(pv);
+    let ws_root = runner.workspace_root.clone();
+    let specs = target_specs(pv, ws_root.as_str());
     let argv = vec![
         "--output=streamed_proto".to_string(),
         "--keep_going".to_string(),
@@ -57,11 +56,14 @@ pub async fn query_sync(runner: &BazelRunner, pv: &ProjectView) -> Result<Snapsh
 
     let mut graph = TargetGraph::default();
 
-    // pass 1: create nodes for returned rules
+    // pass 1: create nodes for returned rules, minus target excludes
     let mut rules: Vec<(u32, &blaze_query::Rule)> = Vec::new();
     for target in &targets {
         if target.r#type == blaze_query::target::Discriminator::Rule as i32 {
             if let Some(rule) = &target.rule {
+                if label_is_excluded(&rule.name, &pv.targets.excludes) {
+                    continue;
+                }
                 let srcs = rule_srcs(rule);
                 let idx = graph.get_or_insert(
                     rule.name.clone(),

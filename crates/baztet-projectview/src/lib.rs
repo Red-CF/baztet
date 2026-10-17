@@ -48,6 +48,8 @@ enum SectionKind {
     Directories,
     /// list of flags, plain strings
     Flags,
+    /// list of plain strings (paths, etc.), no exclude semantics
+    StringList,
     /// boolean singleton
     Boolean,
     /// string singleton
@@ -61,10 +63,11 @@ fn section_kind(key: &str) -> Option<SectionKind> {
         "targets" => SectionKind::Targets,
         "directories" => SectionKind::Directories,
         "build_flags" | "test_flags" | "sync_flags" | "debug_flags" => SectionKind::Flags,
+        "test_sources" | "import_run_configurations" => SectionKind::StringList,
         "derive_targets_from_directories" | "allow_manual_targets_sync" | "shard_sync" => {
             SectionKind::Boolean
         }
-        "bazel_binary" => SectionKind::String_,
+        "bazel_binary" | "workspace_type" | "java_language_level" => SectionKind::String_,
         "import_depth" | "target_shard_size" => SectionKind::Int,
         _ => return None,
     })
@@ -97,6 +100,14 @@ pub struct ProjectView {
     import_depth: Option<u32>,
     /// targets per sharded query batch (only when `shard_sync` is enabled)
     target_shard_size: Option<u32>,
+    /// additional source paths to index (tests, examples)
+    pub test_sources: Vec<String>,
+    /// `java` per hirschgarten; only `java` is meaningful to the CLI
+    pub workspace_type: Option<String>,
+    /// e.g. `JDK_21`
+    pub java_language_level: Option<String>,
+    /// run configuration XMLs to surface as CLI test/run recipes
+    pub import_run_configurations: Vec<String>,
 }
 
 pub const DEFAULT_BAZEL_BINARY: &str = "bazel";
@@ -141,6 +152,10 @@ impl ProjectView {
         self.test_flags.extend(other.test_flags);
         self.sync_flags.extend(other.sync_flags);
         self.debug_flags.extend(other.debug_flags);
+        self.test_sources.extend(other.test_sources);
+        self.import_run_configurations.extend(other.import_run_configurations);
+        take(&mut self.workspace_type, other.workspace_type);
+        take(&mut self.java_language_level, other.java_language_level);
         take(&mut self.bazel_binary, other.bazel_binary);
         take(&mut self.import_depth, other.import_depth);
         take(&mut self.target_shard_size, other.target_shard_size);
@@ -205,6 +220,20 @@ pub fn parse(
     workspace_root: &Utf8PathBuf,
 ) -> Result<ProjectView, ProjectViewError> {
     parse_with_depth(path, workspace_root, DEFAULT_IMPORT_DEPTH)
+}
+
+/// Parse project view text directly (no file on disk). Imports whose file is
+/// absent error like a required import would.
+pub fn parse_text(text: &str) -> Result<ProjectView, ProjectViewError> {
+    let raw = Raw::parse(text)?;
+    let mut result = ProjectView::default();
+    for (key, entries) in &raw.list_entries {
+        apply_list(&mut result, key, entries)?;
+    }
+    for (key, value, line) in &raw.scalars {
+        apply_scalar(&mut result, key, value, *line)?;
+    }
+    Ok(result)
 }
 
 fn parse_with_depth(
@@ -337,7 +366,8 @@ impl Raw {
                     }
                     Some(SectionKind::Targets)
                     | Some(SectionKind::Directories)
-                    | Some(SectionKind::Flags) => {
+                    | Some(SectionKind::Flags)
+                    | Some(SectionKind::StringList) => {
                         current_list = Some(key.to_string());
                         // allow the first entry inline: `targets: //foo`
                         let inline = strip_scalar(value);
@@ -397,6 +427,10 @@ fn apply_list(result: &mut ProjectView, key: &str, entries: &[String]) -> Result
         "test_flags" => result.test_flags.extend(entries.iter().cloned()),
         "sync_flags" => result.sync_flags.extend(entries.iter().cloned()),
         "debug_flags" => result.debug_flags.extend(entries.iter().cloned()),
+        "test_sources" => result.test_sources.extend(entries.iter().cloned()),
+        "import_run_configurations" => {
+            result.import_run_configurations.extend(entries.iter().cloned())
+        }
         _ => unreachable!("validated earlier"),
     }
     Ok(())
@@ -431,6 +465,9 @@ fn apply_scalar(
                     .map_err(|_| ProjectViewError::BadValue { key: key.to_string(), expected: "an integer", value: value.to_string() })?,
             )
         }
+        // carried, no CLI behavior yet
+        "workspace_type" => result.workspace_type = Some(value.to_string()),
+        "java_language_level" => result.java_language_level = Some(value.to_string()),
         _ => unreachable!("validated earlier"),
     }
     Ok(())
