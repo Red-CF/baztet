@@ -18,7 +18,7 @@ PV="${BAZTET_REAL_PV:-}"
 PV_ARGS=""
 [ -n "$PV" ] && PV_ARGS="--project-view $PV"
 
-mkdir -p docs
+mkdir -p target/bench
 echo "== version"; "$BIN" --version
 
 echo "== sync --fresh (cold, 1 run)"
@@ -26,7 +26,7 @@ echo "== sync --fresh (cold, 1 run)"
 
 for mode in fast incremental; do
   hyperfine --warmup 2 --min-runs 5 \
-    --export-markdown "docs/bench-${mode}.md" \
+    --export-markdown "target/bench/bench-${mode}.md" \
     --show-output \
     -n "sync" "$BIN --workspace $WS $PV_ARGS sync" >/dev/null
   echo "== sync (${mode})"
@@ -34,7 +34,7 @@ for mode in fast incremental; do
 done
 
 hyperfine --warmup 1 --min-runs 5 \
-  --export-markdown "docs/bench-query.md" \
+  --export-markdown "target/bench/bench-query.md" \
   -n "sync-fast"  "$BIN --workspace $WS $PV_ARGS sync --fast" \
   -n "targets"    "$BIN --workspace $WS targets" \
   -n "doctor"     "$BIN --workspace $WS doctor" >/dev/null
