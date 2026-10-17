@@ -2,3 +2,7 @@ derive_targets_from_directories: true
 
 directories:
     .
+
+import_run_configurations:
+    # fixtures
+    .bazel/unit_test.xml

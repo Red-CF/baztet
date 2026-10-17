@@ -1,0 +1,10 @@
+<configuration name="simple unit test" type="BlazeCommandRunConfigurationType" factoryName="Bazel Command">
+  <blaze-settings handler-id="BlazeCommandGenericRunConfigurationHandlerProvider" kind="sh_test" blaze-command="test">
+    <blaze-target>//:unit_test</blaze-target>
+    <env_state>
+      <envs>
+        <env name="HOME" value="/tmp"/>
+      </envs>
+    </env_state>
+  </blaze-settings>
+</configuration>

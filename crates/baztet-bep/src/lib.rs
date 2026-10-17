@@ -63,11 +63,23 @@ pub struct TargetKey {
     pub configuration: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TestSummary {
     pub label: String,
     /// BEP status enum discriminant as text (PASSED, FAILED, …)
     pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestResultDetail {
+    pub label: String,
+    /// BEP status enum discriminant as text (PASSED, FAILED, …)
+    pub status: String,
+    pub cached_locally: bool,
+    /// `test.xml` output, when present
+    pub xml: Option<BepFile>,
+    /// `test.log` output, when present
+    pub log: Option<BepFile>,
 }
 
 /// Aggregated BEP output of one bazel invocation.
@@ -82,6 +94,8 @@ pub struct BepOutput {
     /// exit code of the whole build (0 = success)
     pub exit_code: Option<i32>,
     pub test_summaries: Vec<TestSummary>,
+    /// per-attempt results (from TestResult events)
+    pub test_results: Vec<TestResultDetail>,
     /// non-empty stderr lines from progress events (diagnostics source)
     pub progress_lines: Vec<String>,
 }
@@ -199,6 +213,29 @@ fn handle(out: &mut BepOutput, event: build_event_stream::BuildEvent) -> Result<
         }
         Some(P::Finished(finished)) => {
             out.exit_code = finished.exit_code.map(|c| c.code).or(out.exit_code);
+        }
+        Some(P::TestResult(result)) => {
+            let Some(IdKind::TestResult(build_event_id::TestResultId { label, .. })) = id_kind
+            else {
+                return Ok(());
+            };
+            let find = |name: &str| {
+                result
+                    .test_action_output
+                    .iter()
+                    .find(|f| f.name == name)
+                    .map(|f| BepFile {
+                        path_prefix: f.path_prefix.clone(),
+                        name: f.name.clone(),
+                    })
+            };
+            out.test_results.push(TestResultDetail {
+                label,
+                status: format_test_status(result.status),
+                cached_locally: result.cached_locally,
+                xml: find("test.xml"),
+                log: find("test.log"),
+            });
         }
         Some(P::TestSummary(summary)) => {
             let Some(IdKind::TestSummary(build_event_id::TestSummaryId { label, .. })) = id_kind

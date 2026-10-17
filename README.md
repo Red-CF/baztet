@@ -12,20 +12,27 @@ are Apache-2.0; see `third_party/THIRD_PARTY_NOTICE.md`.
 Phase-1 project sync works end to end:
 
 ```sh
-baztet sync          # project view -> bazel query --output=streamed_proto -> .baztet/snapshot.bin
+baztet sync          # query phase -> snapshot (add aspect phase: default; --fast skips it)
 baztet targets       # list synced targets (filter, --json)
 baztet deps LABEL    # direct/transitive deps, or --reverse
 ```
 
-Planned: phase-2 aspect sync (full dependency/source data), build/test/run
-with BEP streaming, coverage, sharding, incremental sync.
+Executed flows (M3, mirrors the plugin's run configurations and ExecuteService):
+
+```sh
+baztet build [labels]        # bazel build + project view build_flags
+baztet test [labels]         # --test_filter, PASSED/FAILED per target,
+                             # --cases prints failing junit cases, --json report
+baztet run LABEL             # bazel run with streamed output
+baztet coverage [labels]     # lcov report paths
+baztet recipes [--run NAME]  # imported run configs (.bazel/*.xml -> command, target, env)
+```
 
 ## Honest performance note
 
 Bazel itself dominates sync and build wall-clock time. baztet's wins are
 process-level: no JVM/IDE startup, streaming proto decoding (no giant lists
-in heap), and one static binary. Phase-2 will add parallel aspect-output
-parsing and incremental snapshot reuse.
+in heap), parallel aspect-output parsing, and one static binary.
 
 ## Building
 
