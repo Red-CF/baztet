@@ -125,7 +125,7 @@ pub fn deploy(
         field_loads: field_load_transforms(config),
     };
 
-    for (rel_path, contents) in EMBEDDED_ASPECT_FILES {
+    for (rel_path, contents) in EMBEDDED_ASPECT_FILES() {
         if !(rel_path.starts_with("common/")
             || rel_path.starts_with("intellij/")
             || rel_path.starts_with("modules/"))
