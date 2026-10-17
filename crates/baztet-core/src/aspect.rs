@@ -446,6 +446,33 @@ x = 1
     }
 
     #[test]
+    fn deploy_is_idempotent_but_reacts_to_config() {
+        let tmp = std::env::temp_dir().join("baztet-aspect-idempotent-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let ws = camino::Utf8PathBuf::try_from(tmp.clone()).unwrap().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let cfg = config();
+        let dir = deploy(&ws, ".baztet/aspect", &cfg).unwrap();
+        let aspect_file = dir.join("config/aspect.bzl");
+        let first_mtime = std::fs::metadata(&aspect_file).unwrap().modified().unwrap();
+
+        // second deploy with the SAME config keeps files byte-identical,
+        // so bazel never re-analyzes the aspect for nothing
+        let _ = deploy(&ws, ".baztet/aspect", &cfg).unwrap();
+        let same_mtime = std::fs::metadata(&aspect_file).unwrap().modified().unwrap();
+        assert_eq!(first_mtime, same_mtime, "unchanged config must not rewrite files");
+
+        // a DIFFERENT config (e.g. canonical repo mapping changed) must land
+        let mut other = cfg.clone();
+        other.repo_mapping = std::collections::BTreeMap::from([(Rules::Kotlin, "rules_kotlin+_other".into())]);
+        let _ = deploy(&ws, ".baztet/aspect", &other).unwrap();
+        let text = std::fs::read_to_string(dir.join("intellij/aspect.bzl")).unwrap();
+        assert!(text.contains("rules_kotlin+_other") || !text.contains("rules_kotlin"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn ruleset_name_roundtrip() {
         for (rule, name) in [(Rules::Java, "@rules_java"), (Rules::Kotlin, "@rules_kotlin")] {
             assert_eq!(rule.ruleset_name(), name);

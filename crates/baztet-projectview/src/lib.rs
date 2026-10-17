@@ -588,6 +588,33 @@ directories:
     }
 
     #[test]
+    fn import_chain_files() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join("baztet-pv-import-test");
+        let ws = camino::Utf8PathBuf::try_from(tmp.clone()).unwrap().join("ws");
+        let _ = fs::remove_dir_all(&ws);
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("base.bazelproject"), "import_depth: 5\nbuild_flags:\n    --base\n")
+            .unwrap();
+        fs::write(ws.join("own.bazelproject"), "import /base.bazelproject\nbuild_flags:\n    --own\n")
+            .unwrap();
+
+        let view = parse(&ws.join("own.bazelproject"), &ws).unwrap();
+        assert_eq!(view.import_depth(), 5); // imported value survives
+        assert_eq!(view.build_flags, ["--base", "--own"]); // own flags land after
+
+        // missing required import errors; missing try_import is skipped
+        fs::write(ws.join("bad.bazelproject"), "import /missing.bazelproject\ntargets:\n    //a:b\n").unwrap();
+        assert!(matches!(
+            parse(&ws.join("bad.bazelproject"), &ws),
+            Err(ProjectViewError::ImportFailure { .. })
+        ));
+        fs::write(ws.join("ok.bazelproject"), "try_import /missing.bazelproject\ntargets:\n    //a:b\n").unwrap();
+        assert!(parse(&ws.join("ok.bazelproject"), &ws).is_ok());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
     fn split_exclude_labels() {
         assert_eq!(split_exclude("-//x"), (true, "//x"));
         assert_eq!(split_exclude("//x"), (false, "//x"));

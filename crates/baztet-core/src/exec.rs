@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::process::Stdio;
 
-use baztet_bep::{BepError, BepOutput, TestResultDetail};
+use baztet_bep::{BepError, BepOutput};
 use baztet_projectview::ProjectView;
 use thiserror::Error;
 
@@ -128,7 +128,7 @@ impl BazelRunner {
     async fn exec_with_bep(
         &self,
         command: &str,
-        pv: &ProjectView,
+        _pv: &ProjectView,
         spec: &ExecSpec,
         extra_flags: impl FnOnce(&mut Vec<String>) -> Result<(), BazelError>,
     ) -> Result<ExecResult, ExecError> {
@@ -445,6 +445,35 @@ mod tests {
     }
 
     #[test]
+    fn recipe_parse_full() {
+        let xml = r#"<configuration name="api unit tests" type="BlazeCommandRunConfigurationType" factoryName="Bazel Command">
+  <blaze-settings handler-id="BlazeCommandGenericRunConfigurationHandlerProvider" kind="java_test" blaze-command="test">
+    <blaze-target>//pkg/api:unit</blaze-target>
+    <env_state>
+      <envs>
+        <env name="CONFIG_PATH" value="config.yaml"/>
+      </envs>
+    </env_state>
+  </blaze-settings>
+</configuration>"#;
+        let r = parse_recipe(xml).expect("parses");
+        assert_eq!(r.name, "api unit tests");
+        assert_eq!(r.command, "test");
+        assert_eq!(r.target, "//pkg/api:unit");
+        assert_eq!(r.env.get("CONFIG_PATH").map(String::as_str), Some("config.yaml"));
+    }
+
+    #[test]
+    fn recipe_rejects_incomplete() {
+        assert!(parse_recipe(r#"<configuration><blaze-settings></blaze-settings></configuration>"#).is_none());
+        // target without command
+        assert!(parse_recipe(
+            r#"<configuration><blaze-settings blaze-command=""><blaze-target>//a:b</blaze-target></blaze-settings></configuration>"#
+        )
+        .is_none());
+    }
+
+    #[test]
     fn junit_error_case() {
         let xml = r#"<testsuite><testcase name="e"><error message="boom"/></testcase></testsuite>"#;
         let cases = parse_test_xml(xml.as_bytes());
@@ -452,14 +481,4 @@ mod tests {
         assert_eq!(cases[0].message.as_deref(), Some("boom"));
     }
 
-    #[test]
-    fn test_result_detail_flows() {
-        let _ = TestResultDetail {
-            label: "//a:t".into(),
-            status: "PASSED".into(),
-            cached_locally: false,
-            xml: None,
-            log: None,
-        };
-    }
 }

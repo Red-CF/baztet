@@ -111,10 +111,17 @@ fn pkg_to_spec(pkg: &str) -> String {
 /// Filter synced target labels against the project view's exclude patterns
 /// (`targets:` entries starting with `-`, incl. `//path/...` wildcards).
 pub fn label_is_excluded(label: &str, excludes: &[String]) -> bool {
+    fn label_in_package(label: &str, pkg: &str) -> bool {
+        // `//pkg` forms: the package's own label, a subpackage, or a rule in it
+        label == pkg
+            || label.starts_with(&format!("{pkg}/"))
+            || label.starts_with(&format!("{pkg}:"))
+    }
+
     excludes.iter().any(|ex| {
         let ex = ex.strip_prefix('-').unwrap_or(ex);
         if let Some(prefix) = ex.strip_suffix("/...") {
-            label == prefix || label.starts_with(&format!("{prefix}/"))
+            label_in_package(label, prefix)
         } else if let Some(pkg) = ex.strip_suffix(":all") {
             let pkg = pkg.trim_start_matches("//");
             label == ex || label.starts_with(&format!("//{pkg}/"))
