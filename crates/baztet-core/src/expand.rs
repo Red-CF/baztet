@@ -14,9 +14,11 @@ const SKIP_DIRS: [&str; 6] =
 
 /// All `//pkg:all` specs for the included directories, minus excluded
 /// directory subtrees. Returns sorted, deduped specs.
-pub fn expand_directory_targets(pv: &ProjectView, workspace_root: &str) -> Vec<String> {
+/// Returns specs plus the max mtime (unix secs) of every BUILD file seen
+/// (for incremental sync freshness checks).
+pub fn expand_directory_targets(pv: &ProjectView, workspace_root: &str) -> (Vec<String>, Option<u64>) {
     if !pv.derive_targets_from_directories() {
-        return vec![];
+        return (vec![], None);
     }
 
     let excludes: HashSet<&str> = pv
@@ -28,6 +30,7 @@ pub fn expand_directory_targets(pv: &ProjectView, workspace_root: &str) -> Vec<S
         .collect();
 
     let mut specs: Vec<String> = Vec::new();
+    let mut max_mtime: Option<u64> = None;
     for entry in &pv.directories.entries {
         if entry.exclude {
             continue;
@@ -35,17 +38,26 @@ pub fn expand_directory_targets(pv: &ProjectView, workspace_root: &str) -> Vec<S
         let rel = entry.path.trim();
         let rel = rel.trim_matches('/');
         let dir = Path::new(workspace_root).join(rel);
-        walk_packages(&dir, rel, &excludes, &mut specs);
+        walk_packages(&dir, rel, &excludes, &mut specs, &mut max_mtime);
     }
     specs.sort();
     specs.dedup();
-    specs
+    (specs, max_mtime)
 }
 
 /// DFS: emit `//<pkg>:all` for every directory holding a BUILD file.
-fn walk_packages(dir: &Path, pkg: &str, excludes: &HashSet<&str>, out: &mut Vec<String>) {
+fn walk_packages(
+    dir: &Path,
+    pkg: &str,
+    excludes: &HashSet<&str>,
+    out: &mut Vec<String>,
+    max_mtime: &mut Option<u64>,
+) {
     if is_package_dir(dir) {
         out.push(pkg_to_spec(pkg));
+        if let Some(m) = build_file_mtime(dir) {
+            *max_mtime = Some(m);
+        }
     }
     let Ok(read) = std::fs::read_dir(dir) else { return };
     let mut children: Vec<_> = read.flatten().collect();
@@ -67,8 +79,18 @@ fn walk_packages(dir: &Path, pkg: &str, excludes: &HashSet<&str>, out: &mut Vec<
         if is_excluded(&child_pkg, excludes) {
             continue;
         }
-        walk_packages(&child.path(), &child_pkg, excludes, out);
+        walk_packages(&child.path(), &child_pkg, excludes, out, max_mtime);
     }
+}
+
+/// `BUILD`/`BUILD.bazel` mtime in unix seconds (0 when unknown).
+fn build_file_mtime(dir: &Path) -> Option<u64> {
+    let path = if dir.join("BUILD").is_file() { dir.join("BUILD") } else { dir.join("BUILD.bazel") };
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
 }
 
 fn is_excluded(pkg: &str, excludes: &HashSet<&str>) -> bool {
@@ -142,7 +164,7 @@ mod tests {
         tree(&tmp, &["services/a", "services/a/sub", "services/b", "libs/x"]);
 
         let pv = hand_pv(&[("services/a", false), ("services/b", false)], true, &[]);
-        let specs = expand_directory_targets(&pv, tmp.to_str().unwrap());
+        let specs = expand_directory_targets(&pv, tmp.to_str().unwrap()).0;
         assert!(specs.contains(&"//services/a:all".to_string()));
         assert!(specs.contains(&"//services/a/sub:all".to_string()));
         assert!(specs.contains(&"//services/b:all".to_string()));
@@ -150,7 +172,7 @@ mod tests {
 
         // exclude services/a subtree by only listing services/b
         let pv = hand_pv(&[("services/a", true), ("services/b", false)], true, &[]);
-        let specs = expand_directory_targets(&pv, tmp.to_str().unwrap());
+        let specs = expand_directory_targets(&pv, tmp.to_str().unwrap()).0;
         assert!(specs.contains(&"//services/b:all".to_string()));
         assert!(!specs.iter().any(|s| s.contains("services/a")));
 

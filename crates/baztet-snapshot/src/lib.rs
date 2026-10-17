@@ -1,6 +1,6 @@
 //! baztet project snapshot: target graph + persistence.
 //!
-//! Version 2 = query sync data + phase-2 aspect (TargetIdeInfo summaries).
+//! Version 3 = v2 + sync fingerprint + aspect-output reuse metadata.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -8,7 +8,7 @@ use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const SNAPSHOT_SCHEMA: u16 = 2;
+pub const SNAPSHOT_SCHEMA: u16 = 3;
 /// on-disk location, relative to the workspace root
 pub const SNAPSHOT_PATH: &str = ".baztet/snapshot.bin";
 
@@ -34,6 +34,17 @@ pub struct Snapshot {
     /// phase-2 aspect data, keyed by `label!configuration`
     #[serde(default)]
     pub ide_infos: BTreeMap<String, IdeSummary>,
+    /// fingerprint of the resolved project view + bazel version; unchanged
+    /// fingerprint lets `sync` reuse the query graph (incremental sync)
+    #[serde(default)]
+    pub sync_fingerprint: Option<u64>,
+    /// last-synced aspect output files per ide entry key: relpath@mtime
+    #[serde(default)]
+    pub ide_sources_meta: BTreeMap<String, String>,
+    /// max BUILD-file mtime (unix secs) at last successful sync; detects
+    /// BUILD changes without re-querying
+    #[serde(default)]
+    pub build_files_mtime: Option<u64>,
     /// workspace configurations seen in BEP, keyed by configuration id
     #[serde(default)]
     pub configurations: BTreeMap<String, ConfigurationLite>,
