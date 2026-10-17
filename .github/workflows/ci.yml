@@ -196,7 +196,7 @@ jobs:
           git tag "v$V"
           git push origin "v$V"
           gh release create "v$V" --generate-notes
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.decide.outputs.release == 'true'
         with:
           path: bins
