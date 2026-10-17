@@ -61,6 +61,13 @@ pub mod gen {
 
 pub use gen::{blaze_query, build_event_stream};
 
+/// The vendored intellij-aspect bzl sources (contents of the deployed
+/// `archive_ide.zip`: `common/`, `intellij/`, `modules/`), embedded at build
+/// time — used by the deployer in `baztet-core`.
+pub fn embedded_aspect_files() -> &'static [(&'static str, &'static [u8])] {
+    include!(concat!(env!("OUT_DIR"), "/aspect_files.rs"))
+}
+
 /// `prost-reflect` descriptor pool for all vendored protos. Used to parse the
 /// text-format `*.intellij-info.txt` aspect outputs into dynamic messages.
 pub fn descriptor_pool() -> prost_reflect::DescriptorPool {
