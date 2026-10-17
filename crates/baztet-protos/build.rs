@@ -28,7 +28,7 @@ fn main() {
 
     // embed the aspect bzl sources (archive_ide.zip contents) for the deployer
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    copy_tree(&aspect_src, &out_dir.join("aspect"));
+    copy_tree(&aspect_src.join("bzl"), &out_dir.join("aspect"));
     let mut body = String::from("&[\n");
     for path in walk(&out_dir.join("aspect")) {
         let rel = path.strip_prefix(out_dir.join("aspect")).unwrap().to_string_lossy().replace('\\', "/");

@@ -1,6 +1,7 @@
 [package]
 name = "baztet-bep"
 description = "Bazel Build Event Protocol reader for the baztet CLI"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # dependency CVE gate: Cargo.lock against the RustSec advisory DB.
+  # deny-warnings=false so unmaintained-dep notices don't turn CI red;
+  # only real vulnerabilities fail the check
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deny-warnings: false
+
+  # lint gate: zero warnings allowed (the codebase holds it today; this
+  # keeps it from rotting)
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets -- -D warnings
+
+  coverage:
+    # coverage lives on its own named check: instrumented tests on Linux,
+    # plus the gh-pages badge on main pushes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov
+          cargo llvm-cov --all-features --exclude baztet --lcov --output-path lcov.info
+      - name: update gh-pages badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PCT=$(awk -F: '/^LF:/{lf+=$2}/^LH:/{lh+=$2}END{printf "%.0f", 100*lh/(lf?lf:1)}' lcov.info)
+          COLOR=$([ "$PCT" -ge 90 ] && echo 44cc11 || ([ "$PCT" -ge 75 ] && echo 97ca00 || echo dfb317))
+          printf '<svg xmlns="http://www.w3.org/2000/svg" width="108" height="20"><rect width="108" height="20" rx="3" fill="#%s"/><text x="54" y="14" font-size="11" font-family="Verdana,sans-serif" fill="#fff" text-anchor="middle">coverage %s%%</text></svg>\n' "$COLOR" "$PCT" > coverage.svg
+          URL="https://x-access-token:${GH_TOKEN}@github.com/Red-CF/baztet.git"
+          git clone -q --depth=1 --branch=gh-pages "$URL" ghp \
+            || { mkdir ghp && git -C ghp init -q -b gh-pages && git -C ghp remote add origin "$URL"; }
+          mv coverage.svg ghp/coverage.svg
+          git -C ghp -c user.name=Red-CF -c user.email=crojasfer31@gmail.com add coverage.svg
+          git -C ghp -c user.name=Red-CF -c user.email=crojasfer31@gmail.com commit -q -m "coverage badge: $PCT%" --allow-empty
+          git -C ghp push -q origin gh-pages
+
+  # integration tests need a real bazel 9; run them on the platforms we ship
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # arm64
+          - os: macos-13 # intel
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      # ignored tests: e2e with a real bazel is only asserted in the
+      # release job (bazel install on CI runners is heavy)
+
+  # tag builds: upload `baztet-<platform>` binaries to the GitHub release,
+  # they are the non-cargo install path
+  build-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: baztet-macOS-ARM64
+          - os: macos-13
+            name: baztet-macOS-Intel
+          - os: ubuntu-latest
+            name: baztet-Linux-X64
+          - os: windows-latest
+            name: baztet-Windows-X64.exe
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --package baztet
+      - name: stage binary
+        shell: bash
+        run: |
+          mkdir -p bins
+          cp target/release/baztet* "bins/${{ matrix.name }}" 2>/dev/null \
+            || cp target/release/baztet.exe "bins/${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: bins/
+
+  # gather the four binaries and publish the GitHub release (the non-cargo
+  # install path)
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, coverage, build-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: bins/
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: bins/*
