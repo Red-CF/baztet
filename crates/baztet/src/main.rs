@@ -209,14 +209,14 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Build { labels, passthrough } => {
             let runner = discover(cli).await?;
-            let snapshot = load_snapshot(workspace_of(&cli.clone())?)?;
+            let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = default_labels(&snapshot, labels)?;
             let result = runner.exec_build(&load_pv(&runner, None)?, &spec(labels.clone(), passthrough.clone())).await?;
             Ok(exit_for("build", result.code))
         }
         Command::Test { labels, filter, pattern, cases, json, passthrough } => {
             let runner = discover(cli).await?;
-            let snapshot = load_snapshot(workspace_of(&cli.clone())?)?;
+            let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = test_labels(&snapshot, labels, pattern)?;
             let mut spec = spec(labels, passthrough.clone());
             spec.test_filter = filter.clone();
@@ -265,7 +265,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Coverage { labels, passthrough } => {
             let runner = discover(cli).await?;
-            let snapshot = load_snapshot(workspace_of(&cli.clone())?)?;
+            let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = default_labels(&snapshot, labels)?;
             let result = runner.exec_coverage(&load_pv(&runner, None)?, &spec(labels.clone(), passthrough.clone())).await?;
             if let Some(bep) = result.bep.as_ref() {
@@ -427,7 +427,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             if !label.starts_with("//") && !label.starts_with('@') {
                 anyhow::bail!("not a bazel label: {label}");
             }
-            let snapshot = load_snapshot(workspace_of(&cli)?)?;
+            let snapshot = load_snapshot(workspace_of(cli)?)?;
             let Some(idx) = snapshot.graph.index_of(label) else {
                 anyhow::bail!("target {label} not in snapshot; run `baztet sync` first");
             };
