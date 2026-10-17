@@ -24,7 +24,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sync the project: run phase-1 query sync, save the target graph.
+    /// Sync the project: query phase + aspect phase, save the snapshot.
     Sync {
         /// project view file (defaults to <workspace>/.bazelproject)
         #[arg(long)]
@@ -32,9 +32,12 @@ enum Command {
         /// print the resulting snapshot as JSON to stdout
         #[arg(long)]
         json: bool,
-        /// fail on query errors instead of saving a partial snapshot
+        /// fail on sync errors instead of saving a partial snapshot
         #[arg(long)]
         fresh: bool,
+        /// stop after the fast query phase (skip aspect analysis)
+        #[arg(long)]
+        fast: bool,
     },
     /// List targets in the synced snapshot.
     Targets {
@@ -80,7 +83,7 @@ fn exit_code(code: i32) -> ExitCode {
 
 async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     match &cli.command {
-        Command::Sync { project_view, json, fresh } => {
+        Command::Sync { project_view, json, fresh, fast } => {
             let runner = discover(cli).await?;
             let pv_path =
                 project_view.clone().unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
@@ -88,7 +91,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 anyhow::bail!("project view not found at {pv_path}");
             }
             let pv = baztet_projectview::parse(&pv_path, &runner.workspace_root)?;
-            let snapshot = sync_engine::query_sync(&runner, &pv).await?;
+            let snapshot = sync_engine::sync(&runner, &pv, !fast).await?;
             let path = snapshot.save()?;
             eprintln!(
                 "[baztet] synced {} target(s), {} -> {path}",

@@ -1,0 +1,464 @@
+//! Deploying the vendored intellij-aspect into a workspace directory.
+//!
+//! Ports the semantics of the JetBrains intellij-aspect SDK (`sdk/lib/*.kt`):
+//!
+//! - archive contents (`common/`, `intellij/`, `modules/`) are embedded from
+//!   `third_party/protos/aspect/bzl` at build time
+//! - `load()` statements get rewritten: workspace-absolute paths gain the
+//!   deploy-dir prefix, external repos are remapped to canonical names,
+//!   loads of builtin rule sets are removed, and language toolchain fields
+//!   become top-level constants
+//! - a `config/` dir is rendered (BUILD, config.bzl, aspect.bzl with module
+//!   loads), matching the SDK's `writeAspectConfig`
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use camino::Utf8PathBuf;
+
+/// Vendored aspect bzl files, embedded at build time (see build.rs).
+pub static EMBEDDED_ASPECT_FILES: &[(&'static str, &'static [u8])] =
+    include!(concat!(env!("OUT_DIR"), "/aspect_files.rs"));
+
+/// Rule sets the aspect knows about; names match the SDK's `Rules` enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rules {
+    Cc,
+    Python,
+    Java,
+    Kotlin,
+    Scala,
+    Go,
+    Proto,
+    LegacyRulesProto,
+}
+
+impl Rules {
+    pub fn ruleset_name(self) -> &'static str {
+        match self {
+            Rules::Cc => "@rules_cc",
+            Rules::Python => "@rules_python",
+            Rules::Java => "@rules_java",
+            Rules::Kotlin => "@rules_kotlin",
+            Rules::Scala => "@rules_scala",
+            Rules::Go => "@rules_go",
+            Rules::Proto => "@protobuf",
+            Rules::LegacyRulesProto => "@rules_proto",
+        }
+    }
+
+    fn from_ruleset_name(name: &str) -> Option<Rules> {
+        Some(match name {
+            "@rules_cc" => Rules::Cc,
+            "@rules_python" => Rules::Python,
+            "@rules_java" => Rules::Java,
+            "@rules_kotlin" => Rules::Kotlin,
+            "@rules_scala" => Rules::Scala,
+            "@rules_go" => Rules::Go,
+            "@protobuf" => Rules::Proto,
+            "@rules_proto" => Rules::LegacyRulesProto,
+            _ => return None,
+        })
+    }
+}
+
+/// Aspect module = one `modules/<file>.bzl` with the rule sets it applies to.
+const MODULES: &[(&str, &[Rules])] = &[
+    ("run_info", &[]),
+    ("test_info", &[]),
+    ("xcode_info", &[Rules::Cc]),
+    ("cc_info", &[Rules::Cc]),
+    ("cc_toolchain_info", &[Rules::Cc]),
+    ("java_info", &[Rules::Java]),
+    ("java_toolchain_info", &[Rules::Java]),
+    ("java_common_info", &[Rules::Java, Rules::Kotlin, Rules::Scala]),
+    ("jvm_info", &[Rules::Java, Rules::Kotlin, Rules::Scala]),
+    ("kotlin_info", &[Rules::Kotlin]),
+    ("scala_info", &[Rules::Scala]),
+    ("go_info", &[Rules::Go]),
+    ("py_info", &[Rules::Python]),
+    ("python_info", &[Rules::Python]),
+    ("protobuf_info", &[Rules::Proto]),
+    ("proto_info", &[Rules::Proto, Rules::LegacyRulesProto]),
+    ("rules_proto_info", &[Rules::LegacyRulesProto]),
+];
+
+/// Modules to configure for a deployment, mirroring `modulesForRules`:
+/// rulesets default to `useBuiltin ∪ repoMapping.keys` (SDK's AspectConfig).
+fn modules_for_rules(config: &AspectConfig) -> Vec<&'static str> {
+    let mut rules: BTreeSet<Rules> = config.use_builtin.clone();
+    rules.extend(config.repo_mapping.keys().copied());
+    MODULES
+        .iter()
+        .filter(|(_, rulesets)| rulesets.is_empty() || rulesets.iter().any(|r| rules.contains(r)))
+        .map(|(file, _)| *file)
+        .collect()
+}
+
+/// Configuration for the aspect deployment (mirrors SDK `AspectConfig`).
+#[derive(Debug, Clone, Default)]
+pub struct AspectConfig {
+    pub bazel_version: String,
+    pub os_name: String,
+    /// default repo name -> canonical repo name
+    pub repo_mapping: BTreeMap<Rules, String>,
+    /// languages for which to use builtin rules (strip their rule set loads)
+    pub use_builtin: BTreeSet<Rules>,
+}
+
+/// Deploy the aspect into `<workspace_root>/<prefix>`. Idempotent: rewrites
+/// only files whose content differs.
+pub fn deploy(
+    workspace_root: &Utf8PathBuf,
+    prefix: &str,
+    config: &AspectConfig,
+) -> std::io::Result<Utf8PathBuf> {
+    let deploy_dir = workspace_root.join(prefix);
+    std::fs::create_dir_all(&deploy_dir)?;
+
+    let t = Transformers {
+        prefix: trim_slashes(prefix),
+        external: config
+            .repo_mapping
+            .iter()
+            .map(|(k, v)| (k.ruleset_name(), v.clone()))
+            .collect(),
+        builtin_remove: config.use_builtin.iter().map(|r| r.ruleset_name()).collect(),
+        field_loads: field_load_transforms(config),
+    };
+
+    for (rel_path, contents) in EMBEDDED_ASPECT_FILES {
+        if !(rel_path.starts_with("common/")
+            || rel_path.starts_with("intellij/")
+            || rel_path.starts_with("modules/"))
+        {
+            continue;
+        }
+        let Some(text) = std::str::from_utf8(contents).ok() else { continue };
+        let transformed = transform_file(text, &t);
+        let dest = deploy_dir.join(*rel_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_if_differs(&dest, &transformed);
+    }
+
+    // minimal BUILD.bazel so the deployed dirs are bona fide bazel packages
+    for dir in ["common", "intellij", "modules"] {
+        write_if_differs(&deploy_dir.join(dir).join("BUILD.bazel"), "# generated by baztet\n");
+    }
+
+    render_config(&deploy_dir, prefix, config)?;
+
+    Ok(deploy_dir)
+}
+
+fn trim_slashes(s: &str) -> String {
+    s.trim().trim_matches('/').replace('\\', "/")
+}
+
+/// Language fields whose loads are replaced by builtin top-level values,
+/// mirroring the SDK's Transform*ToolchainType / TransformJavaSemantics.
+fn field_load_transforms(config: &AspectConfig) -> Vec<(&'static str, String)> {
+    let label = |l: &str| format!("Label(\"{l}\")");
+    let mut out = vec![];
+    if config.use_builtin.contains(&Rules::Cc) {
+        out.push(("CC_TOOLCHAIN_TYPE", label("@bazel_tools//tools/cpp:toolchain_type")));
+    }
+    if config.use_builtin.contains(&Rules::Python) {
+        out.push(("PYTHON_TOOLCHAIN_TYPE", label("@bazel_tools//tools/python:toolchain_type")));
+    }
+    if config.use_builtin.contains(&Rules::Java) {
+        out.push((
+            "JAVA_SEMANTICS",
+            format!("struct(JAVA_TOOLCHAIN_TYPE = {})", label("@bazel_tools//tools/jdk:toolchain_type")),
+        ));
+    }
+    if let Some(scala) = config.repo_mapping.get(&Rules::Scala) {
+        out.push(("SCALA_TOOLCHAIN_TYPE", label(&format!("{scala}//scala:toolchain_type"))));
+    }
+    out
+}
+
+struct Transformers {
+    prefix: String,
+    external: BTreeMap<&'static str, String>,
+    builtin_remove: Vec<&'static str>,
+    field_loads: Vec<(&'static str, String)>,
+}
+
+/// A parsed `load("path", args…)`, mirroring the SDK's `LoadStatement`.
+struct LoadStatement {
+    repository: Repo,
+    /// path as it will be rendered after the repository prefix
+    path: String,
+    arguments: String,
+}
+
+/// Repository part of a load statement.
+enum Repo {
+    /// `:file` in the same package
+    Relative,
+    /// `//pkg:file` in the main repo
+    Absolute,
+    /// `@repo//pkg:file`
+    External(String),
+}
+
+impl LoadStatement {
+    /// Parse `load("\"path\"", args)`. The path may be:
+    /// - `:relative` → Relative
+    /// - `//pkg/file` → Absolute
+    /// - `@repo//pkg/file` → External(repo)
+    fn parse(line: &str) -> Option<Self> {
+        let line = line.trim_end();
+        let rest = line.trim_start().strip_prefix("load(")?;
+        let rest = rest.trim_start().strip_prefix('"')?;
+        let (module, after) = rest.split_once('"')?;
+        let arguments: String = {
+            let no_close = after.trim_start().trim_start_matches(',').trim().strip_suffix(')')?;
+            no_close.trim_end().to_string()
+        };
+
+        let (repository, path) = if let Some(_path) = module.strip_prefix(':') {
+            (Repo::Relative, module.to_string())
+        } else if let Some(path) = module.strip_prefix("//") {
+            if path.starts_with('/') || path.is_empty() {
+                return None;
+            }
+            (Repo::Absolute, path.to_string())
+        } else if let Some((repo, path)) = module.split_once("//") {
+            let repo = repo.trim_start_matches('@');
+            if repo.is_empty() || repo.contains('/') {
+                return None;
+            }
+            (Repo::External(repo.to_string()), path.to_string())
+        } else {
+            return None;
+        };
+        Some(LoadStatement { repository, path, arguments })
+    }
+
+    fn render(&self) -> String {
+        let repo_prefix = match &self.repository {
+            Repo::Absolute => "//".to_string(),
+            Repo::Relative => String::new(),
+            Repo::External(name) => format!("@{name}//"),
+        };
+        format!("load(\"{}{}\", {})", repo_prefix, self.path, self.arguments)
+    }
+}
+
+/// Applies the transformer pipeline to one file's content: pull out load
+/// statements, transform, emit loads first then remaining lines. Mirrors
+/// `transformFile` + all transformers in the SDK.
+fn transform_file(text: &str, t: & Transformers) -> String {
+    let mut loads: Vec<LoadStatement> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        match LoadStatement::parse(line) {
+            Some(stmt) => loads.push(stmt),
+            None => lines.push(line.to_string()),
+        }
+    }
+
+    // TransformRelativePaths: prepend the deploy prefix to // paths
+    for stmt in &mut loads {
+        if matches!(stmt.repository, Repo::Absolute) {
+            stmt.path = format!("{}/{}", t.prefix, stmt.path);
+        }
+    }
+
+    // TransformExternalRepositories: remap external repo names
+    for stmt in &mut loads {
+        if let Repo::External(name) = &mut stmt.repository {
+            if let Some(mapped) = t.external.get(name.as_str()) {
+                *name = mapped.clone();
+            }
+        }
+    }
+
+    // TransformBuiltinRules + TransformFieldLoad: remove loads of builtin
+    // rule sets, and remove external loads of replaced fields
+    loads.retain(|stmt| {
+        if !matches!(stmt.repository, Repo::External(_)) {
+            return true;
+        }
+        if let Repo::External(name) = &stmt.repository {
+            if t.builtin_remove.contains(&name.as_str()) {
+                return false;
+            }
+        }
+        if t.field_loads.iter().any(|(field, _)| stmt.arguments.contains(field)) {
+            return false;
+        }
+        true
+    });
+
+    // TransformFieldLoad: emit replacement field constants before the body
+    let mut out = String::new();
+    for stmt in &loads {
+        out.push_str(&stmt.render());
+        out.push('\n');
+    }
+    if !loads.is_empty() {
+        for (field, replacement) in &t.field_loads {
+            out.push_str(&format!("{field} = {replacement}\n"));
+        }
+    }
+    for line in &lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn write_if_differs(path: &Utf8PathBuf, payload: &str) {
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        if existing == payload {
+            return;
+        }
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, payload);
+}
+
+fn render_config(deploy_dir: &Utf8PathBuf, prefix: &str, config: &AspectConfig) -> std::io::Result<()> {
+    let config_dir = deploy_dir.join("config");
+    std::fs::create_dir_all(&config_dir)?;
+
+    let prefix = trim_slashes(prefix);
+
+    // BUILD: container target
+    let build_file = format!(
+        concat!(
+            "# generated by baztet (aspect config)\n",
+            "\n",
+            "load(\"//{prefix}/modules:module.bzl\", \"intellij_module\")\n",
+            "\n",
+            "intellij_module.container(\n",
+            "    name = \"module_container\",\n",
+            "    visibility = [\"//visibility:public\"],\n",
+            ")\n"
+        ),
+        prefix = prefix,
+    );
+    write_if_differs(&config_dir.join("BUILD"), &build_file);
+
+    // config.bzl: bazel version + os
+    let config_struct = format!(
+        "# generated by baztet (aspect config)\n\nconfig = struct(\n  bazel_version = \"{}\",\n  os = \"{}\",\n)\n",
+        config.bazel_version, config.os_name
+    );
+    write_if_differs(&config_dir.join("config.bzl"), &config_struct);
+
+    // aspect.bzl: load aspect + module loads + MODULES + aspect
+    let modules = modules_for_rules(config);
+    let loads = modules
+        .iter()
+        .map(|m| format!("load(\"//{prefix}/modules:{m}.bzl\", {m} = \"module\")"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let files = modules.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ");
+    let aspect_file = format!(
+        "# generated by baztet (aspect config)\n\nload(\"//{prefix}/intellij:aspect.bzl\", \"intellij_configure_aspect\")\n{loads}\n\nMODULES = [{files}]\n\nintellij_aspect = intellij_configure_aspect(\n    modules = MODULES,\n    container = \"//{prefix}/config:module_container\",\n)\n"
+    );
+    write_if_differs(&config_dir.join("aspect.bzl"), &aspect_file);
+
+    Ok(())
+}
+
+/// The name of the aspect, mirroring the SDK's `Aspects.INTELLIJ`.
+pub fn aspect_name(prefix: &str) -> String {
+    format!("//{}/config:aspect.bzl%intellij_aspect", trim_slashes(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> AspectConfig {
+        AspectConfig {
+            bazel_version: "9.2.0".into(),
+            os_name: "darwin".into(),
+            repo_mapping: BTreeMap::from([(Rules::Kotlin, "rules_kotlin+".into())]),
+            use_builtin: [Rules::Java].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn embedded_files_present() {
+        assert!(EMBEDDED_ASPECT_FILES.len() > 20);
+        assert!(EMBEDDED_ASPECT_FILES.iter().any(|(p, _)| *p == "intellij/aspect.bzl"));
+        assert!(EMBEDDED_ASPECT_FILES.iter().any(|(p, _)| *p == "modules/java_info.bzl"));
+    }
+
+    #[test]
+    fn load_parse_and_render() {
+        let stmt = LoadStatement::parse("load(\"@rules_kotlin//kotlin:defs.bzl\", \"kt_library\")").unwrap();
+        assert_eq!(stmt.render(), "load(\"@rules_kotlin//kotlin:defs.bzl\", \"kt_library\")");
+        let rel = LoadStatement::parse("load(\":x.bzl\", \"y\")").unwrap();
+        assert!(matches!(rel.repository, Repo::Relative));
+        let abs = LoadStatement::parse("load(\"//a/b:c.bzl\", \"d\")").unwrap();
+        assert!(matches!(abs.repository, Repo::Absolute));
+        assert!(LoadStatement::parse("x = 1").is_none());
+    }
+
+    #[test]
+    fn rewrite_all_transforms() {
+        let text = "\
+load(\"//common:version.bzl\", \"v\")
+load(\"@rules_kotlin//kotlin:defs.bzl\", \"kt_library\")
+load(\"@rules_java//java:defs.bzl\", \"JAVA_SEMANTICS\")
+
+x = 1
+";
+        let t = Transformers {
+            prefix: ".baztet/aspect".to_string(),
+            external: [("rules_kotlin", "rules_kotlin+".to_string())].into_iter().collect(),
+            builtin_remove: vec!["rules_java"],
+            field_loads: vec![(
+                "JAVA_SEMANTICS",
+                "struct(JAVA_TOOLCHAIN_TYPE = Label(\"@bazel_tools//tools/jdk:toolchain_type\"))".to_string(),
+            )],
+        };
+        let out = transform_file(text, &t);
+        assert!(out.contains("load(\"//.baztet/aspect/common:version.bzl\", \"v\")"));
+        assert!(out.contains("load(\"@rules_kotlin+//kotlin:defs.bzl\", \"kt_library\")"));
+        assert!(!out.contains("@rules_java"));
+        assert!(out.contains("JAVA_SEMANTICS = struct(JAVA_TOOLCHAIN_TYPE = Label("));
+    }
+
+    #[test]
+    fn deploy_writes_tree() {
+        let tmp = std::env::temp_dir().join("baztet-aspect-deploy-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let ws = camino::Utf8PathBuf::try_from(tmp.clone()).unwrap().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let dir = deploy(&ws, ".baztet/aspect", &config()).unwrap();
+        let aspect = std::fs::read_to_string(dir.join("config/aspect.bzl")).unwrap();
+        assert!(aspect.contains("intellij_configure_aspect"));
+        assert!(aspect.contains("kotlin_info"));
+        // builtin JAVA: java_info module stays present (it is used by JAVA)
+        assert!(std::fs::read_to_string(dir.join("modules/java_info.bzl")).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ruleset_name_roundtrip() {
+        for (rule, name) in [(Rules::Java, "@rules_java"), (Rules::Kotlin, "@rules_kotlin")] {
+            assert_eq!(rule.ruleset_name(), name);
+            assert_eq!(Rules::from_ruleset_name(name), Some(rule));
+        }
+        assert_eq!(Rules::from_ruleset_name("@unknown"), None);
+        assert!(load_parse_edge_cases());
+    }
+
+    fn load_parse_edge_cases() -> bool {
+        // multiple args, whitespace variants
+        LoadStatement::parse("load(\":a.bzl\", \"x\", \"y = z\")").is_some()
+            && LoadStatement::parse("load(  \":a.bzl\"  , \"x\")").is_some()
+    }
+}

@@ -1,14 +1,14 @@
 //! baztet project snapshot: target graph + persistence.
 //!
-//! Version 1 = phase-1 (query sync) data. Phase-2 aspect data lands in M2.
+//! Version 2 = query sync data + phase-2 aspect (TargetIdeInfo summaries).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const SNAPSHOT_SCHEMA: u16 = 1;
+pub const SNAPSHOT_SCHEMA: u16 = 2;
 /// on-disk location, relative to the workspace root
 pub const SNAPSHOT_PATH: &str = ".baztet/snapshot.bin";
 
@@ -31,6 +31,12 @@ pub struct Snapshot {
     pub bazel_version: Option<String>,
     /// target labels the project view specified (pre-expansion), for fingerprinting
     pub specified_targets: Vec<String>,
+    /// phase-2 aspect data, keyed by `label!configuration`
+    #[serde(default)]
+    pub ide_infos: BTreeMap<String, IdeSummary>,
+    /// workspace configurations seen in BEP, keyed by configuration id
+    #[serde(default)]
+    pub configurations: BTreeMap<String, ConfigurationLite>,
     pub graph: TargetGraph,
     /// query sync keeps going on errors: partial graph + flag
     pub has_error: bool,
@@ -58,6 +64,35 @@ pub struct TargetNode {
     pub deps: Vec<u32>,
     /// source file paths relative to workspace root
     pub srcs: Vec<String>,
+}
+
+/// Trimmed projection of the aspect's `TargetIdeInfo` proto: only fields
+/// the CLI serves; the full proto stays out of the snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IdeSummary {
+    /// rule kind, e.g. `java_library`
+    pub kind: String,
+    /// dependency labels
+    pub deps: Vec<String>,
+    /// source file paths relative to the workspace root
+    pub srcs: Vec<String>,
+    /// java jars: (interface jar, binary jar) locations or None
+    pub java_jars: Vec<JarPair>,
+    /// directory holding generated java sources, if any
+    pub jvm_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct JarPair {
+    pub interface_jar: Option<String>,
+    pub jar: Option<String>,
+}
+
+/// Trimmed `WorkspaceConfiguration`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConfigurationLite {
+    pub mnemonic: String,
+    pub cpu: String,
 }
 
 impl TargetGraph {
