@@ -172,12 +172,31 @@ impl TargetGraph {
         }
     }
 
-    /// Labels that depend on `idx` (reverse deps).
-    pub fn reverse_deps(&self, idx: u32) -> Vec<&TargetNode> {
+    /// Indices of targets that depend on `idx` (reverse deps).
+    pub fn reverse_deps_indices(&self, idx: u32) -> Vec<u32> {
         self.targets
             .iter()
-            .filter(|t| t.deps.contains(&idx))
+            .enumerate()
+            .filter(|(_, t)| t.deps.contains(&idx))
+            .map(|(i, _)| i as u32)
             .collect()
+    }
+
+    /// Labels that depend on `idx` (reverse deps).
+    pub fn reverse_deps(&self, idx: u32) -> Vec<&TargetNode> {
+        self.reverse_deps_indices(idx)
+            .into_iter()
+            .map(|i| &self.targets[i as usize])
+            .collect()
+    }
+
+    /// Rule inputs of `idx` that are not themselves nodes (external deps,
+    /// generated inputs, non-label inputs).
+    pub fn unlinked_deps(&self, idx: u32) -> &[String] {
+        self.unlinked_deps
+            .get(&idx)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Transitive closure of deps of `idx`, BFS order.
@@ -291,6 +310,24 @@ mod tests {
         assert_eq!(s.graph.transitive_deps(c), [c, b, a]);
         assert_eq!(s.graph.reverse_deps(a).len(), 1);
         assert_eq!(s.graph.get_by_label("//missing:lib"), None);
+    }
+
+    #[test]
+    fn old_schema_errors_clean() {
+        let mut s = Snapshot::new("/ws".into());
+        s.schema = 2;
+        let bytes = s.to_bytes().unwrap();
+        match Snapshot::from_bytes(&bytes) {
+            Err(SnapshotError::Version { found: 2, expected: 3 }) => {}
+            other => panic!("expected clean Version error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_bytes_error() {
+        let mut bytes = Snapshot::default().to_bytes().unwrap();
+        bytes[2] ^= 0xff;
+        assert!(Snapshot::from_bytes(&bytes).is_err());
     }
 
     #[test]

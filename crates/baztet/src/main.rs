@@ -18,6 +18,10 @@ struct Cli {
     #[arg(long, global = true)]
     workspace: Option<Utf8PathBuf>,
 
+    /// project view file (defaults to <workspace>/.bazelproject)
+    #[arg(long, global = true)]
+    project_view: Option<Utf8PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -26,9 +30,6 @@ struct Cli {
 enum Command {
     /// Sync the project: query phase + aspect phase, save the snapshot.
     Sync {
-        /// project view file (defaults to <workspace>/.bazelproject)
-        #[arg(long)]
-        project_view: Option<Utf8PathBuf>,
         /// print the resulting snapshot as JSON to stdout
         #[arg(long)]
         json: bool,
@@ -91,9 +92,6 @@ enum Command {
     },
     /// List imported run configurations (recipes) from the project view.
     Recipes {
-        /// project view file (defaults to <workspace>/.bazelproject)
-        #[arg(long)]
-        project_view: Option<Utf8PathBuf>,
         /// run one recipe: `baztet test --recipe acceptance-tests`
         #[arg(long, short)]
         run: Option<String>,
@@ -187,10 +185,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     }
 
     match &cli.command {
-        Command::Sync { project_view, json, fresh, fast } => {
+        Command::Sync { json, fresh, fast } => {
+            let _project_view = &cli.project_view;
             let runner = discover(cli).await?;
             let pv_path =
-                project_view.clone().unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
+                cli.project_view.clone().unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
             if !pv_path.is_file() {
                 anyhow::bail!("project view not found at {pv_path}");
             }
@@ -283,9 +282,10 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(exit_for("coverage", result.code))
         }
-        Command::Recipes { project_view, run, json } => {
+        Command::Recipes { run, json } => {
+            let _project_view = &cli.project_view;
             let runner = discover(cli).await?;
-            let pv = load_pv(&runner, project_view.as_ref())?;
+            let pv = load_pv(&runner, cli.project_view.as_ref())?;
             let mut recipes: Vec<Recipe> = Vec::new();
             let mut missing = 0usize;
             for path in &pv.import_run_configurations {
@@ -443,10 +443,9 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 while pos < queue.len() {
                     let node_idx = queue[pos];
                     pos += 1;
-                    for dep in graph.reverse_deps(node_idx) {
-                        let dep_idx = graph.index_of(&dep.label).unwrap();
+                    for dep_idx in graph.reverse_deps_indices(node_idx) {
                         if seen.insert(dep_idx) {
-                            out.push(dep.label.clone());
+                            out.push(graph.get_by_index(dep_idx).unwrap().label.clone());
                             queue.push(dep_idx);
                         }
                     }
@@ -464,6 +463,12 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             };
             for l in &labels {
                 println!("{l}");
+            }
+            // rule inputs outside the graph: external deps, generated files
+            if !*reverse {
+                for u in graph.unlinked_deps(idx) {
+                    println!("# unlinked: {u}");
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
