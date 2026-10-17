@@ -1,0 +1,216 @@
+//! Running bazel subprocesses: shared runner with `bazel info` and streaming
+//! helpers (stdout lines / length-delimited protobufs).
+
+use std::process::Stdio;
+
+use camino::Utf8PathBuf;
+use prost::Message;
+use thiserror::Error;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+
+use crate::workspace::BazelInfo;
+
+#[derive(Debug, Error)]
+pub enum BazelError {
+    #[error("bazel workspace not found above {0}")]
+    NoWorkspace(Utf8PathBuf),
+    #[error("bazel command '{0}' failed with exit code {1}:\n{2}")]
+    Failure(String, i32, String),
+    #[error("failed to spawn bazel: {0}")]
+    Spawn(#[from] std::io::Error),
+    #[error("failed to decode proto stream: {0}")]
+    Decode(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct BazelRunner {
+    pub binary: String,
+    pub workspace_root: Utf8PathBuf,
+    pub info: BazelInfo,
+}
+
+impl BazelRunner {
+    /// Create a runner: run `bazel info`, parse workspace details.
+    pub async fn new(binary: &str, workspace_root: Utf8PathBuf) -> Result<Self, BazelError> {
+        let info = Self::run_info(binary, &workspace_root).await?;
+        Ok(Self {
+            binary: binary.to_string(),
+            workspace_root,
+            info,
+        })
+    }
+
+    /// Convenience: discover the workspace upward from `start` and probe bazel.
+    pub async fn discover(binary: &str, start: &Utf8PathBuf) -> Result<Self, BazelError> {
+        let workspace_root = crate::workspace::find_workspace_root(start)
+            .ok_or_else(|| BazelError::NoWorkspace(start.clone()))?;
+        Self::new(binary, workspace_root).await
+    }
+
+    async fn run_info(binary: &str, workspace_root: &Utf8PathBuf) -> Result<BazelInfo, BazelError> {
+        let out = Command::new(binary)
+            .current_dir(workspace_root)
+            .arg("info")
+            .kill_on_drop(true)
+            .output()
+            .await?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() {
+            return Err(BazelError::Failure(
+                "info".into(),
+                out.status.code().unwrap_or(-1),
+                format!("{text}\n{}", String::from_utf8_lossy(&out.stderr)),
+            ));
+        }
+        Ok(crate::workspace::parse_info(&text))
+    }
+
+    /// Run a bazel command to completion; return (exit_code, stdout, stderr).
+    pub async fn run_simple(
+        &self,
+        command: &str,
+        args: &[String],
+    ) -> Result<(i32, String, String), BazelError> {
+        let mut cmd = Command::new(&self.binary);
+        cmd.current_dir(&self.workspace_root)
+            .arg(command)
+            .args(args)
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        let out = cmd.output().await?;
+        Ok((
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
+    }
+
+    /// Run a bazel command whose stdout is a stream of length-delimited
+    /// protobufs (`--output=streamed_proto` framing). Returns the decoded
+    /// protos plus the command's exit code and stderr text.
+    ///
+    /// Errors keep going at the bazel level, so we always return the partial
+    /// stream; the caller decides what a nonzero exit code means.
+    pub async fn run_streaming_protos<M: Message + Default>(
+        &self,
+        command: &str,
+        args: &[String],
+    ) -> Result<(Vec<M>, i32, String), BazelError> {
+        let mut cmd = Command::new(&self.binary);
+        cmd.current_dir(&self.workspace_root)
+            .arg(command)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn()?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| BazelError::Decode("child stdout not captured".into()))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| BazelError::Decode("child stderr not captured".into()))?;
+
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stderr.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
+            buf
+        });
+
+        let protos = read_length_delimited(&mut stdout).await?;
+        let status = child.wait().await?;
+        Ok((
+            protos,
+            status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&stderr_task.await.unwrap_or_default()).into_owned(),
+        ))
+    }
+}
+
+/// Read length-delimited (varint-prefixed) protobufs until EOF.
+async fn read_length_delimited<M: Message + Default>(
+    reader: &mut (impl AsyncReadExt + Unpin + Send),
+) -> Result<Vec<M>, BazelError> {
+    let mut protos = Vec::new();
+    loop {
+        // read a varint
+        let mut len: u64 = 0;
+        let mut shift = 0u32;
+        let mut eof = false;
+        loop {
+            let mut byte = [0u8; 1];
+            match reader.read_exact(&mut byte).await {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    eof = true;
+                    break;
+                }
+                Err(other) => return Err(BazelError::Decode(other.to_string())),
+            }
+            len |= u64::from(byte[0] & 0x7f) << shift;
+            if byte[0] & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+            if shift >= 64 {
+                return Err(BazelError::Decode("varint too long".into()));
+            }
+        }
+        if eof {
+            return Ok(protos);
+        }
+        let len = usize::try_from(len).map_err(|_| BazelError::Decode("varint overflow".into()))?;
+        let mut msg_buf = vec![0u8; len];
+        reader
+            .read_exact(&mut msg_buf)
+            .await
+            .map_err(|e| BazelError::Decode(format!("truncated proto: {e}")))?;
+        let decoded = M::decode(msg_buf.as_slice()).map_err(|e| BazelError::Decode(e.to_string()))?;
+        protos.push(decoded);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct TestMsg {
+        #[prost(int32, tag = "1")]
+        pub value: i32,
+    }
+
+    /// read_length_delimited round-trips a stream of framed messages.
+    #[tokio::test]
+    async fn framed_roundtrip() {
+        let mut stream = Vec::new();
+        for value in [1, 2, -5] {
+            let msg = TestMsg { value };
+            msg.encode_length_delimited(&mut stream).unwrap();
+        }
+        let decoded =
+            read_length_delimited::<TestMsg>(&mut stream.as_slice()).await.unwrap();
+        assert_eq!(
+            decoded,
+            [TestMsg { value: 1 }, TestMsg { value: 2 }, TestMsg { value: -5 }]
+        );
+    }
+
+    /// A zero-byte stream decodes to zero messages.
+    #[tokio::test]
+    async fn empty_stream() {
+        let decoded = read_length_delimited::<TestMsg>(&mut Vec::new().as_slice()).await
+            .unwrap();
+        assert!(decoded.is_empty());
+    }
+}
