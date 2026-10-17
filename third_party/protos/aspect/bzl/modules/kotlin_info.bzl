@@ -1,0 +1,311 @@
+# Copyright 2026 JetBrains s.r.o.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+load("@rules_kotlin//kotlin/internal:defs.bzl", "KtCompilerPluginInfo", "KtJvmInfo", "TOOLCHAIN_TYPE")
+load("@rules_kotlin//kotlin/internal:opts.bzl", "JavacOptions", "KotlincOptions", "javac_options_to_flags", "kotlinc_options_to_flags")
+load("//common:artifact_location.bzl", "artifact_location")
+load("//common:common.bzl", "intellij_common")
+load("//common:dependencies.bzl", "intellij_deps")
+load("//common:output_groups.bzl", "intellij_output_groups")
+load("//common:provider.bzl", "intellij_provider")
+load(":module.bzl", "intellij_module")
+
+COMPILE_DEPS = ["associates"]
+EXPORTED_COMPILE_TIME_DEPS = ["exports"]
+RUNTIME_DEPS = ["resource_jars"]
+
+def _get_additional_javac_options(ctx):
+    if TOOLCHAIN_TYPE not in ctx.toolchains:
+        return []
+    kotlin_toolchain = ctx.toolchains[TOOLCHAIN_TYPE]
+    toolchain_javac_opts = kotlin_toolchain.javac_options
+    javac_opts_target = getattr(ctx.rule.attr, "javac_opts", None)
+    javac_opts = javac_opts_target[JavacOptions] if javac_opts_target and JavacOptions in javac_opts_target else toolchain_javac_opts
+
+    return javac_options_to_flags(javac_opts)
+
+def _get_kotlinc_options(ctx):
+    if TOOLCHAIN_TYPE not in ctx.toolchains:
+        return []
+    kotlin_toolchain = ctx.toolchains[TOOLCHAIN_TYPE]
+    toolchain_kotlinc_opts = kotlin_toolchain.kotlinc_options
+    kotlinc_opts_target = getattr(ctx.rule.attr, "kotlinc_opts", None)
+    kotlinc_opts = kotlinc_opts_target[KotlincOptions] if kotlinc_opts_target and KotlincOptions in kotlinc_opts_target else toolchain_kotlinc_opts
+
+    # if not specifically set, the default value of "jvm_target" in kotlinc_opts is an empty string.
+    if not getattr(kotlinc_opts, "jvm_target", None) and getattr(kotlin_toolchain, "jvm_target", ""):
+        kotlinc_opts = intellij_common.struct_update(kotlinc_opts, jvm_target = getattr(kotlin_toolchain, "jvm_target"))
+    return kotlinc_options_to_flags(kotlinc_opts)
+
+def _source_jars(output):
+    if hasattr(output, "source_jars"):
+        source_jars = output.source_jars
+        if type(source_jars) == "depset":
+            return source_jars.to_list()
+        else:
+            # assuming it returns sequence type here
+            return source_jars
+    if hasattr(output, "source_jar") and output.source_jar != None:
+        return [output.source_jar]
+    return []
+
+def _get_jvm_outputs(target):
+    return [
+        intellij_common.struct(
+            binary_jars = [artifact_location.from_file(output.class_jar)] if output.class_jar else [],
+            interface_jars = [artifact_location.from_file(output.ijar)] if output.ijar else [],
+            source_jars = artifact_location.from_files(_source_jars(output)),
+        )
+        for output in getattr(getattr(target[KtJvmInfo], "outputs", struct()), "jars", [])
+    ]
+
+def _extract_kt_compiler_plugin_option(option):
+    if type(option) != "struct":
+        return None
+
+    plugin_id = getattr(option, "id", "")
+    option_value = getattr(option, "value", "")
+    if not plugin_id or not option_value:
+        return None
+
+    return intellij_common.struct(
+        plugin_id = plugin_id,
+        option_value = option_value,
+    )
+
+def _get_kotlin_plugins(ctx, dep_targets):
+    # accumulate Kotlin compiler plugin info
+    direct_plugins = getattr(ctx.rule.attr, "plugins", [])
+    dep_plugins = []
+
+    # exported_compiler_plugins is not transitive, so we only iterate over direct dependencies.
+    # See https://github.com/bazelbuild/rules_kotlin/blob/f14d01ef5af3ad7ff0660ff671ca9b20c8a020d2/kotlin/internal/jvm/jvm.bzl#L268
+    for dep in dep_targets:
+        if KtJvmInfo in dep:
+            exported_compiler_plugins = getattr(dep[KtJvmInfo], "exported_compiler_plugins", None)
+            if exported_compiler_plugins:
+                dep_plugins.append(exported_compiler_plugins)
+    return depset(direct = direct_plugins, transitive = dep_plugins).to_list()
+
+def _extract_kt_compiler_plugin_info(plugin):
+    if KtCompilerPluginInfo not in plugin:
+        return None
+
+    compiler_plugin_info = plugin[KtCompilerPluginInfo]
+
+    plugin_jars = [
+        artifact_location.from_file(it)
+        for it in compiler_plugin_info.classpath.to_list()
+        if it != None
+    ]
+
+    raw_options = compiler_plugin_info.options
+    kt_compiler_plugin_options = [
+        option
+        for option in [_extract_kt_compiler_plugin_option(raw_option) for raw_option in raw_options]
+        if option != None
+    ]
+
+    return intellij_common.struct(
+        plugin_jars = plugin_jars,
+        kotlinc_plugin_options = kt_compiler_plugin_options,
+    )
+
+def _get_kotlin_stdlib_java_info(ctx):
+    if TOOLCHAIN_TYPE not in ctx.toolchains:
+        return None
+    return getattr(ctx.toolchains[TOOLCHAIN_TYPE], "jvm_stdlibs", None)
+
+def _get_kotlin_stdlib_outputs(ctx):
+    """The toolchain stdlibs as jar outputs: each class jar with the source jar its target declares.
+    """
+    stdlibs = _get_kotlin_stdlib_java_info(ctx)
+    if stdlibs == None:
+        return []
+
+    class_jars = []
+    compile_jars_by_class_jar = {}
+    source_jars_by_class_jar = {}
+    for output in getattr(stdlibs, "java_outputs", []):
+        class_jar = getattr(output, "class_jar", None)
+        if class_jar == None:
+            continue
+        if class_jar.path not in compile_jars_by_class_jar:
+            class_jars.append(class_jar)
+            compile_jars_by_class_jar[class_jar.path] = []
+            source_jars_by_class_jar[class_jar.path] = []
+
+        # A compile jar of its own, as a java_import or a rules_jvm_external jvm_import produces.
+        compile_jar = getattr(output, "compile_jar", None)
+        if compile_jar and compile_jar != class_jar and compile_jar not in compile_jars_by_class_jar[class_jar.path]:
+            compile_jars_by_class_jar[class_jar.path].append(compile_jar)
+        for source_jar in _source_jars(output):
+            if source_jar not in source_jars_by_class_jar[class_jar.path]:
+                source_jars_by_class_jar[class_jar.path].append(source_jar)
+
+    outputs = [
+        intellij_common.struct(
+            binary_jars = [artifact_location.from_file(class_jar)],
+            interface_jars = artifact_location.from_files(compile_jars_by_class_jar[class_jar.path]),
+            source_jars = artifact_location.from_files(source_jars_by_class_jar[class_jar.path]),
+        )
+        for class_jar in class_jars
+    ]
+
+    # A JavaInfo without java_outputs (an older Bazel) still has its compile jars.
+    if not outputs:
+        outputs = [
+            intellij_common.struct(
+                binary_jars = [artifact_location.from_file(f)],
+                interface_jars = [],
+                source_jars = [],
+            )
+            for f in stdlibs.compile_jars.to_list()
+        ]
+    return outputs
+
+def _get_associates(target, ctx):
+    associates = intellij_common.attr_as_label_list(ctx, "associates")
+    associates_labels = [str(associate.label) for associate in associates]
+    associates_keys = intellij_common.target_keys_from(associates)
+    direct_dep_targets_list = [
+        intellij_common.attr_as_label_list(ctx, attr)
+        for attr in ["deps", "jars", "associates"]
+    ]
+    direct_dep_targets = [
+        target
+        for target_list in direct_dep_targets_list
+        for target in target_list
+    ]
+    for dep in direct_dep_targets:
+        if str(dep.label) in associates_labels:
+            for provider in intellij_provider.JVM:
+                internal_result = intellij_module.lookup_target(dep, provider)
+                if internal_result:
+                    exports = getattr(internal_result, "exports", [])
+                    associates_keys += intellij_common.target_keys_from(exports)
+    return associates_keys
+
+def _normalize_jars(jars):
+    if type(jars) == "list":
+        return jars
+    else:
+        return [jars]
+
+def _get_generated_jars(target, ctx):
+    if getattr(target[KtJvmInfo], "annotation_processing", None) and target[KtJvmInfo].annotation_processing.enabled:
+        class_jars = [jar for jar in _normalize_jars(target[KtJvmInfo].annotation_processing.class_jar) if jar != None]
+        source_jars = [jar for jar in _normalize_jars(target[KtJvmInfo].annotation_processing.source_jar) if jar != None]
+        if hasattr(target[KtJvmInfo], "additional_generated_source_jars"):
+            source_jars = source_jars + [jar for jar in target[KtJvmInfo].additional_generated_source_jars]
+        if hasattr(target[KtJvmInfo], "all_output_jars"):
+            class_jars = class_jars + [jar for jar in target[KtJvmInfo].all_output_jars]
+        return [
+            struct(
+                binary_jars = artifact_location.from_files(class_jars),
+                source_jars = artifact_location.from_files(source_jars),
+            ),
+        ]
+    return []
+
+def _get_outputs(target, ctx, plugins):
+    resolve_files = []
+    transitives = []
+    stdlibs = _get_kotlin_stdlib_java_info(ctx)
+    if stdlibs != None:
+        # The IDE opens the stdlib source jars it is told about, so they are built with the class jars.
+        transitives += [stdlibs.compile_jars, stdlibs.transitive_source_jars]
+    for plugin in plugins:
+        if KtCompilerPluginInfo in plugin:
+            transitives += [plugin[KtCompilerPluginInfo].classpath]
+    for out in getattr(getattr(target[KtJvmInfo], "outputs", struct()), "jars", []):
+        if getattr(out, "compile_jar", None):
+            resolve_files += [out.compile_jar]
+        elif getattr(out, "ijar", None):
+            resolve_files += [out.ijar]
+        if getattr(out, "class_jar", None):
+            resolve_files += [out.class_jar]
+        if getattr(out, "source_jars", None):
+            if type(out.source_jars) == "depset":
+                transitives += [out.source_jars]
+            else:
+                resolve_files += out.source_jars
+        if hasattr(out, "source_jar") and out.source_jar != None:
+            resolve_files += [out.source_jar]
+    return intellij_output_groups.from_files(resolve_files, build_transitive = transitives)
+
+def _implementation(target, ctx, attr):
+    if not KtJvmInfo in target:
+        return None
+
+    dep_targets_list = [
+        intellij_common.attr_as_label_list(ctx, attr)
+        for attr in ["associates", "deps", "exports", "jars"]
+    ] + [[t] for t in [intellij_common.attr_as_target(ctx, "_java_toolchain")] if t != None]
+    dep_targets = [
+        target
+        for target_list in dep_targets_list
+        for target in target_list
+    ]
+    plugins = _get_kotlin_plugins(ctx, dep_targets)
+    stdlib_outputs = _get_kotlin_stdlib_outputs(ctx)
+
+    return intellij_module.result(
+        outputs = _get_outputs(target, ctx, plugins),
+        value = intellij_common.struct(
+            language_version = getattr(target[KtJvmInfo], "language_version", None),
+            api_version = getattr(target[KtJvmInfo], "language_version", None),  # API version currently not exposed
+            associated_targets = _get_associates(target, ctx),
+            kotlinc_opts = _get_kotlinc_options(ctx),
+            # Deprecated: the class jars of stdlib_jars, for readers of older output.
+            stdlibs = [jar for output in stdlib_outputs for jar in output.binary_jars],
+            stdlib_jars = stdlib_outputs,
+            kotlinc_plugin_infos = [
+                info
+                for info in [_extract_kt_compiler_plugin_info(plugin) for plugin in plugins]
+                if info != None
+            ],
+            exported_compiler_plugin_targets = intellij_common.target_keys_from(plugins),
+            module_name = getattr(target[KtJvmInfo], "module_name", None),
+        ),
+        dependencies = {
+            intellij_deps.COMPILE_TIME: intellij_deps.collect(ctx, COMPILE_DEPS),
+            intellij_deps.EXPORTED_COMPILE_TIME: intellij_deps.collect(ctx, EXPORTED_COMPILE_TIME_DEPS),
+            intellij_deps.RUNTIME: intellij_deps.collect(ctx, RUNTIME_DEPS),
+        },
+        internal_value = intellij_common.struct(
+            java_common = intellij_common.struct(
+                jars = _get_jvm_outputs(target),
+                generated_jars = _get_generated_jars(target, ctx),
+                javac_opts = _get_additional_javac_options(ctx),
+                jvm_target = True,
+            ),
+        ),
+        cross_target_internal_value = intellij_common.struct(
+            exports = intellij_common.attr_as_label_list(ctx, "exports"),
+        ),
+    )
+
+_aspect = intellij_module.aspect(
+    provider = intellij_provider.KotlinInfo,
+    implementation = _implementation,
+    field = "kotlin_target_info",
+)
+
+module = intellij_module.define(
+    file = "kotlin_info",
+    aspect = _aspect,
+    direct_toolchain_deps_do_not_use = [TOOLCHAIN_TYPE],
+    rulesets = ["KOTLIN"],
+)

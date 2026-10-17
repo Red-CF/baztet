@@ -1,0 +1,94 @@
+# Copyright 2025 The Bazel Authors.
+# Copyright 2026 JetBrains s.r.o.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Derived from: https://github.com/bazelbuild/intellij/blob/5ec21e640ed59b316b58559d8e79cb0858e519bd/aspect/intellij_info_impl.bzl
+
+load("@rules_python//python:defs.bzl", "PyInfo")
+load("//common:artifact_location.bzl", "artifact_location")
+load("//common:common.bzl", "intellij_common")
+load("//common:make_variables.bzl", "expand_make_variables")
+load("//common:output_groups.bzl", "intellij_output_groups")
+load("//common:provider.bzl", "intellij_provider")
+load(":module.bzl", "intellij_module")
+
+# PythonVersion enum; must match PyIdeInfo.PythonVersion
+PY2 = 1
+PY3 = 2
+
+# PythonCompatVersion enum; must match PyIdeInfo.PythonSrcsVersion
+SRC_PY2 = 1
+SRC_PY3 = 2
+SRC_PY2AND3 = 3
+SRC_PY2ONLY = 4
+SRC_PY3ONLY = 5
+
+SRCS_VERSION_MAPPING = {
+    "PY2": SRC_PY2,
+    "PY3": SRC_PY3,
+    "PY2AND3": SRC_PY2AND3,
+    "PY2ONLY": SRC_PY2ONLY,
+    "PY3ONLY": SRC_PY3ONLY,
+}
+
+def _get_srcs_version(ctx):
+    srcs_version = getattr(ctx.rule.attr, "srcs_version", "PY2AND3")
+    return SRCS_VERSION_MAPPING.get(srcs_version, SRC_PY2AND3)
+
+def _get_py_launcher(ctx):
+    """Returns the python launcher for a given rule."""
+    if getattr(ctx.rule.attr, "_launcher", None) != None:
+        return str(ctx.rule.attr._launcher.label)
+    else:
+        return None
+
+def _implementation(target, ctx, attr):
+    if PyInfo not in target:
+        return None
+
+    executable = getattr(target[DefaultInfo].files_to_run, "executable", None)
+    to_build = intellij_common.depset([
+        file
+        for file in target.files.to_list()
+        if not file.is_source and file != executable
+    ])
+
+    # TODO: port python get_code_generator_rule_names
+
+    return intellij_module.result(
+        outputs = {
+            intellij_output_groups.BUILD: to_build,
+        },
+        value = intellij_common.struct(
+            launcher = _get_py_launcher(ctx),
+            python_version = PY3,
+            srcs_version = _get_srcs_version(ctx),
+            args = expand_make_variables(ctx, False, intellij_common.attr_as_list(ctx, "args")),
+            imports = intellij_common.attr_as_list(ctx, "imports"),
+        ),
+    )
+
+_aspect = intellij_module.aspect(
+    provider = intellij_provider.PyInfo,
+    implementation = _implementation,
+    field = "py_ide_info",
+)
+
+module = intellij_module.define(
+    file = "py_info",
+    aspect = _aspect,
+    aspect_providers = [PyInfo],
+    fragments = ["py"],
+    rulesets = ["PYTHON"],
+)

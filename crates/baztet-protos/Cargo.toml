@@ -1,0 +1,15 @@
+[package]
+name = "baztet-protos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+prost.workspace = true
+prost-types.workspace = true
+prost-reflect = { version = "0.14", features = ["text-format"] }
+
+[build-dependencies]
+prost-build.workspace = true
+protoc-bin-vendored.workspace = true

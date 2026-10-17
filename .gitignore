@@ -1,0 +1,4 @@
+/target
+fixtures/simple/.baztet/
+**/*.rs.bk
+.DS_Store

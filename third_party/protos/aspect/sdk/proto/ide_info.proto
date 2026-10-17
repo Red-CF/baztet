@@ -1,0 +1,284 @@
+// Copyright 2025 The Bazel Authors.
+// Copyright 2026 JetBrains s.r.o.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Derived from: https://github.com/bazelbuild/intellij/blob/5ec21e640ed59b316b58559d8e79cb0858e519bd/proto/project_data.proto
+
+syntax = "proto3";
+
+import "sdk/proto/common.proto";
+
+option java_package = "com.google.devtools.intellij.ideinfo";
+option java_outer_classname = "IntellijIdeInfo";
+
+message XcodeIdeInfo {
+  string xcode_version = 1;
+  string macos_sdk_version = 2;
+}
+
+message CIdeInfo {
+  // Information collected from rules_cc rule attributes.
+  message RuleContext {
+    repeated ArtifactLocation headers = 2;
+    repeated ArtifactLocation textual_headers = 3;
+
+    repeated string copts = 4;
+    repeated string conlyopts = 5;
+    repeated string cxxopts = 6;
+    repeated string args = 7;
+
+    string include_prefix = 8;
+    string strip_include_prefix = 9;
+  }
+
+  // Information collected from CcInfo provider.
+  message CompilationContext {
+    repeated ArtifactLocation headers = 1;
+
+    repeated string defines = 2;
+    repeated string includes = 3;
+    repeated string quote_includes = 4;
+    repeated string system_includes = 5;
+  }
+
+  RuleContext rule_context = 1;
+  CompilationContext compilation_context = 2;
+}
+
+message PyIdeInfo {
+  enum PythonVersion {
+    UNKNOWN = 0;
+    PY2 = 1;
+    PY3 = 2;
+  }
+
+  enum PythonSrcsVersion {
+    SRC_UNKNOWN = 0;
+    SRC_PY2 = 1;
+    SRC_PY3 = 2;
+    SRC_PY2AND3 = 3;
+    SRC_PY2ONLY = 4;
+    SRC_PY3ONLY = 5;
+  }
+
+  string launcher = 2;
+  // the python version this target has been configured for
+  PythonVersion python_version = 3;
+  // the python versions this target is compatible with
+  PythonSrcsVersion srcs_version = 4;
+  repeated string args = 5;
+  repeated string imports = 6;
+  bool is_code_generator = 7;
+}
+
+message PythonTargetInfo {
+  ArtifactLocation interpreter = 1;
+  string interpreter_path = 8;
+
+  string version = 2;
+  repeated string imports = 3;
+  repeated ArtifactLocation generated_sources = 5;
+  ArtifactLocation main = 6;
+  string main_module = 7;
+}
+
+message JsIdeInfo {
+}
+
+message TsIdeInfo {
+}
+
+message DartIdeInfo {
+}
+
+message JavaToolchainInfo {
+  string source_version = 1;
+  string target_version = 2;
+
+  ArtifactLocation java_home = 3 [deprecated = true];
+  string java_home_path = 6;
+
+  ArtifactLocation boot_classpath_java_home = 4 [deprecated = true];
+  string boot_classpath_java_home_path = 7;
+
+  bool is_exec_config = 5;
+}
+
+message JvmOutputs {
+  repeated ArtifactLocation binary_jars = 1;
+  repeated ArtifactLocation interface_jars = 2;
+  repeated ArtifactLocation source_jars = 3;
+}
+
+message JvmTargetInfo {
+  repeated string jvm_flags = 7;
+  string main_class = 8;
+  repeated string args = 9;
+  string resource_strip_prefix = 13;
+  repeated ArtifactLocation resources = 60;
+}
+
+message JavaCommonInfo {
+  repeated string javac_opts = 1;
+  repeated JvmOutputs jars = 2;
+  repeated JvmOutputs generated_jars = 3;
+  repeated ArtifactLocation jdeps = 4;
+  bool jvm_target = 1004;
+}
+
+message JavaProviderInfo {
+  repeated ArtifactLocation full_compile_jars = 1;
+  bool has_api_generating_plugins = 2;
+}
+
+message CToolchainIdeInfo {
+  string target_name = 1;
+  repeated string cpp_option = 2;
+  repeated string c_option = 3;
+  string c_compiler = 4;
+  string cpp_compiler = 5;
+  repeated string built_in_include_directory = 6;
+  string compiler_name = 7;
+  string sysroot = 8;
+  map<string, string> c_environment = 9;
+  map<string, string> cpp_environment = 10;
+}
+
+message KotlincPluginOption {
+  string plugin_id = 100;
+  string option_value = 200;
+}
+
+message KotlincPluginInfo {
+  repeated ArtifactLocation plugin_jars = 100;
+  repeated KotlincPluginOption kotlinc_plugin_options = 200;
+}
+
+message KotlinTargetInfo {
+  reserved 300, 601;
+  reserved "associates", "exported_compiler_plugin_targets_from_deps";
+  string language_version = 100;
+  string api_version = 200;
+  // use associated_targets instead
+  repeated TargetKey associated_targets = 301;
+  repeated string kotlinc_opts = 400;
+  // The class jars of stdlib_jars. Use stdlib_jars.
+  repeated ArtifactLocation stdlibs = 500 [deprecated = true];
+  // The stdlibs the Kotlin toolchain adds to every compilation, as the toolchain's JavaInfo
+  // reports them: each class jar with its interface jar and the source jar its target declares.
+  repeated JvmOutputs stdlib_jars = 501;
+  repeated KotlincPluginInfo kotlinc_plugin_infos = 600;
+  string module_name = 700;
+  // use exported_compiler_plugin_targets instead
+  repeated TargetKey exported_compiler_plugin_targets = 602;
+}
+
+message ScalaTargetInfo {
+  repeated string scalac_opts = 1;
+  repeated ArtifactLocation compiler_classpath = 2;
+  repeated string scalatest_classpath_targets = 4;
+}
+
+message ProtobufSourceMapping {
+  string import_path = 1;
+  ArtifactLocation proto_file = 2;
+}
+
+message ProtobufTargetInfo {
+  repeated ProtobufSourceMapping source_mappings = 1;
+}
+
+message GoTargetInfo {
+  string import_path = 1;
+  ArtifactLocation sdk_home_path = 2;
+  repeated ArtifactLocation sources = 6;
+  repeated TargetKey embed = 7;
+  reserved 3, 4, 5;
+}
+
+message TestInfo {
+  string size = 1;
+}
+
+message TargetKey {
+  string label = 1;
+
+  // All ids of the aspects executed for this target. Excluding all intellij
+  // aspect ids.
+  repeated string aspect_ids = 3;
+
+  // The short configuration hash for this target. Not available in all Bazel
+  // versions.
+  string configuration = 4;
+}
+
+message Dependency {
+  enum DependencyType {
+    COMPILE_TIME = 0;
+    EXPORTED_COMPILE_TIME = 3;
+    RUNTIME = 1;
+    TOOLCHAIN = 2;
+  }
+
+  TargetKey target = 1;
+  DependencyType dependency_type = 2;
+}
+
+message ExecutableInfo {
+  ArtifactLocation executable_file = 1;
+  ArtifactLocation runfiles_manifest = 2;
+}
+
+message TargetIdeInfo {
+  string kind = 1;
+  TargetKey key = 2;
+  ArtifactLocation build_file_artifact_location = 3;
+  repeated Dependency deps = 4;
+  repeated ArtifactLocation srcs = 50;
+  repeated string tags = 5;
+  repeated string features = 6;
+  TestInfo test_info = 7;
+  string workspace_name = 100;
+  bool testonly = 101;
+  string generator_name = 1500;
+  map<string, string> env = 70;
+  repeated string env_inherit = 80;
+  ExecutableInfo executable_info = 93;
+
+  // The time this target was most recently synced, in milliseconds since epoch.
+  // Not provided by the aspect directly; instead filled in by the plugin during
+  // sync.
+  int64 sync_time_millis = 20;
+
+  CIdeInfo c_ide_info = 120;
+  CToolchainIdeInfo c_toolchain_ide_info = 121;
+  XcodeIdeInfo xcode_ide_info = 122;
+
+  PyIdeInfo py_ide_info = 130;
+  PythonTargetInfo python_target_info = 131;
+  JsIdeInfo js_ide_info = 150;
+  TsIdeInfo ts_ide_info = 160;
+  DartIdeInfo dart_ide_info = 170;
+
+  JvmTargetInfo jvm_target_info = 182;
+  JavaProviderInfo java_provider = 180;
+  JavaToolchainInfo java_toolchain_info = 181;
+  JavaCommonInfo java_common = 183;
+
+  KotlinTargetInfo kotlin_target_info = 190;
+  ScalaTargetInfo scala_target_info = 195;
+
+  ProtobufTargetInfo protobuf_target_info = 200;
+  GoTargetInfo go_target_info = 210;
+}

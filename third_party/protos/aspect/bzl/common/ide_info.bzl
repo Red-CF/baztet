@@ -1,0 +1,79 @@
+# Copyright 2026 JetBrains s.r.o.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+load(":artifact_location.bzl", "artifact_location")
+load(":common.bzl", "intellij_common")
+load(":make_variables.bzl", "expand_make_variables")
+
+def _target_hash(key):
+    """Creates a unique hash for the target based on its key."""
+    parts = [key.label, getattr(key, "configuration", "")] + key.aspect_ids
+    return abs(hash(".".join(["%s" % (hash(part),) for part in parts])))
+
+def _write_info(target, ctx, key, fields):
+    """
+    Collects some common information in addition to the provided fields and
+    writes everything to an intellij-info.txt file.
+    """
+
+    build_file_location = artifact_location.create(
+        root_path = ctx.label.workspace_root,
+        relative_path = ctx.label.package + "/BUILD" if ctx.label.package else "BUILD",
+        is_source = True,
+        is_external = intellij_common.label_is_external(ctx.label),
+    )
+
+    env = {
+        key: "".join(expand_make_variables(ctx, False, [value]))
+        for key, value in intellij_common.attr_as_string_dict(ctx, "env").items()
+    }
+
+    info = fields | {
+        "build_file_artifact_location": build_file_location,
+        "features": ctx.features,
+        "kind": ctx.rule.kind,
+        "tags": ctx.rule.attr.tags,
+        "key": key,
+        "workspace_name": ctx.workspace_name,
+        "generator_name": getattr(ctx.rule.attr, "generator_name", ""),
+        "testonly": getattr(ctx.rule.attr, "testonly", False),
+        "env_inherit": intellij_common.attr_as_string_list(ctx, "env_inherit", strict = True),
+        "env": env,
+        "srcs": artifact_location.from_attr(ctx, "srcs"),
+    }
+
+    # Labels, e.g., of filegroups, may overlap with files. So we cannot use the label name as it might start
+    # with a conflicting directory. Instead we purely rely on the  the hash to discrimate output files. To improve
+    # human debuggability, we include the "file name" part of the label (or the first up to 200 characters thereof,
+    # to keep within file-length limit on all supported OSes).
+    short_file_name = target.label.name.split("/")[-1][:200]
+    file_name = "%s.%s.intellij-info.txt" % (_target_hash(key), short_file_name)
+
+    file = ctx.actions.declare_file(file_name)
+    ctx.actions.write(file, proto.encode_text(struct(**info)))
+
+    return file
+
+def _write_toolchain_info(target, ctx, name, info):
+    """Convenience wrapper around write ide info for toolchains."""
+
+    # for toolchains it should be fine to simply use the aspects from the current context
+    key = intellij_common.target_key(target, ctx, ctx.aspect_ids)
+
+    return _write_info(target, ctx, key, {name: info})
+
+ide_info = struct(
+    write = _write_info,
+    write_toolchain = _write_toolchain_info,
+)
