@@ -10,7 +10,7 @@ build = "build.rs"
 [dependencies]
 prost.workspace = true
 prost-types.workspace = true
-prost-reflect = { version = "0.14", features = ["text-format"] }
+prost-reflect = { version = "0.16", features = ["text-format"] }
 
 [build-dependencies]
 prost-build.workspace = true
