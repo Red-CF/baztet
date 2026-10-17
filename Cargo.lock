@@ -88,7 +88,7 @@ version = "0.2.0"
 dependencies = [
  "baztet-protos",
  "camino",
- "prost 0.13.5",
+ "prost 0.14.4",
  "serde",
  "thiserror",
 ]
@@ -103,7 +103,7 @@ dependencies = [
  "baztet-protos",
  "baztet-snapshot",
  "camino",
- "prost 0.13.5",
+ "prost 0.14.4",
  "prost-reflect",
  "prost-types 0.13.5",
  "quick-xml",
@@ -126,7 +126,7 @@ dependencies = [
 name = "baztet-protos"
 version = "0.2.0"
 dependencies = [
- "prost 0.13.5",
+ "prost 0.14.4",
  "prost-build",
  "prost-reflect",
  "prost-types 0.13.5",
