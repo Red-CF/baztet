@@ -389,9 +389,9 @@ mod tests {
 
     #[test]
     fn embedded_files_present() {
-        assert!(EMBEDDED_ASPECT_FILES.len() > 20);
-        assert!(EMBEDDED_ASPECT_FILES.iter().any(|(p, _)| *p == "intellij/aspect.bzl"));
-        assert!(EMBEDDED_ASPECT_FILES.iter().any(|(p, _)| *p == "modules/java_info.bzl"));
+        assert!(EMBEDDED_ASPECT_FILES().len() > 20);
+        assert!(EMBEDDED_ASPECT_FILES().iter().any(|(p, _)| *p == "intellij/aspect.bzl"));
+        assert!(EMBEDDED_ASPECT_FILES().iter().any(|(p, _)| *p == "modules/java_info.bzl"));
     }
 
     #[test]
