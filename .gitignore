@@ -2,3 +2,10 @@
 fixtures/simple/.baztet/
 **/*.rs.bk
 .DS_Store
+# bazel-generated (convenience symlinks + repo lock regenerate locally)
+bazel-*/
+**/bazel-*
+**/MODULE.bazel.lock
+
+# hyperfine throwaway exports (curated numbers live in docs/BENCHMARKS.md)
+docs/bench-*.md
