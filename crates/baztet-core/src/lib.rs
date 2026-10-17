@@ -2,6 +2,7 @@
 
 pub mod aspect;
 pub mod bazel;
+pub mod exec;
 pub mod expand;
 pub mod ideinfo;
 pub mod sync;
