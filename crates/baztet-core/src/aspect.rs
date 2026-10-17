@@ -16,8 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::Utf8PathBuf;
 
 /// Vendored aspect bzl files, embedded at build time (see build.rs).
-pub static EMBEDDED_ASPECT_FILES: &[(&'static str, &'static [u8])] =
-    include!(concat!(env!("OUT_DIR"), "/aspect_files.rs"));
+use baztet_protos::embedded_aspect_files as EMBEDDED_ASPECT_FILES;
 
 /// Rule sets the aspect knows about; names match the SDK's `Rules` enum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
