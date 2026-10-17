@@ -9,9 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-baztet-core = { path = "../baztet-core", version = "0.1.0" }
-baztet-projectview = { path = "../baztet-projectview", version = "0.1.0" }
-baztet-snapshot = { path = "../baztet-snapshot", version = "0.1.0" }
+baztet-core = { path = "../baztet-core", version = "0.2.0" }
+baztet-projectview = { path = "../baztet-projectview", version = "0.2.0" }
+baztet-snapshot = { path = "../baztet-snapshot", version = "0.2.0" }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 anyhow.workspace = true
