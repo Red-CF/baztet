@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::process::Stdio;
 
-use baztet_bep::{BepError, BepOutput, TestResultDetail};
+use baztet_bep::{BepError, BepOutput};
 use baztet_projectview::ProjectView;
 use thiserror::Error;
 
@@ -80,9 +80,11 @@ impl BazelRunner {
         let mut argv: Vec<String> = vec![];
         common_flags(&mut argv);
         argv.extend(pv.build_flags.iter().cloned());
-        argv.extend(spec.labels.iter().cloned());
         let bep_file = temp_bep_file();
+        // BEP flags must come BEFORE the target label: everything after the
+        // first positional is passed to the executed binary
         bep_flags(&bep_file, &mut argv);
+        argv.extend(spec.labels.iter().cloned());
         argv.extend(spec.extra_args.iter().cloned());
 
         let mut cmd = tokio::process::Command::new(&self.binary);
@@ -128,7 +130,7 @@ impl BazelRunner {
     async fn exec_with_bep(
         &self,
         command: &str,
-        pv: &ProjectView,
+        _pv: &ProjectView,
         spec: &ExecSpec,
         extra_flags: impl FnOnce(&mut Vec<String>) -> Result<(), BazelError>,
     ) -> Result<ExecResult, ExecError> {
@@ -293,7 +295,10 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 in_case = false;
             }
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(e) => {
+                eprintln!("[baztet] junit xml truncated/unparsable near {}: {e}", reader.buffer_position());
+                break;
+            }
             _ => {}
         }
     }
@@ -402,19 +407,21 @@ pub fn test_cases_from_bep(
 }
 
 fn group_by_label(bep: &BepOutput) -> Vec<(String, Vec<String>)> {
+    // flaky tests re-run: only the LAST attempt's xml reflects the final
+    // result; attempt 1 failures would otherwise be reported as active
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
-    for summary in &bep.test_results {
-        // one xml per attempt; keep order
+    for summary in bep.test_results.iter().rev() {
+        if out.iter().any(|(l, _)| *l == summary.label) {
+            continue;
+        }
         if let Some(xml) = &summary.xml {
-            let rel = xml.relative_path();
-            match out.iter_mut().find(|(l, _)| *l == summary.label) {
-                Some((_, paths)) => paths.push(rel),
-                None => out.push((summary.label.clone(), vec![rel])),
-            }
+            out.push((summary.label.clone(), vec![xml.relative_path()]));
         }
     }
+    out.reverse();
     out
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -445,6 +452,63 @@ mod tests {
     }
 
     #[test]
+    fn recipe_parse_full() {
+        let xml = r#"<configuration name="api unit tests" type="BlazeCommandRunConfigurationType" factoryName="Bazel Command">
+  <blaze-settings handler-id="BlazeCommandGenericRunConfigurationHandlerProvider" kind="java_test" blaze-command="test">
+    <blaze-target>//pkg/api:unit</blaze-target>
+    <env_state>
+      <envs>
+        <env name="CONFIG_PATH" value="config.yaml"/>
+      </envs>
+    </env_state>
+  </blaze-settings>
+</configuration>"#;
+        let r = parse_recipe(xml).expect("parses");
+        assert_eq!(r.name, "api unit tests");
+        assert_eq!(r.command, "test");
+        assert_eq!(r.target, "//pkg/api:unit");
+        assert_eq!(r.env.get("CONFIG_PATH").map(String::as_str), Some("config.yaml"));
+    }
+
+    #[test]
+    fn recipe_rejects_incomplete() {
+        assert!(parse_recipe(r#"<configuration><blaze-settings></blaze-settings></configuration>"#).is_none());
+        // target without command
+        assert!(parse_recipe(
+            r#"<configuration><blaze-settings blaze-command=""><blaze-target>//a:b</blaze-target></blaze-settings></configuration>"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn last_attempt_wins_in_reports() {
+        use baztet_bep::{BepFile, TestResultDetail};
+        let bep = BepOutput {
+            test_results: vec![
+                // flaky rerun: attempt 1 failed, attempt 2 passed
+                TestResultDetail {
+                    label: "//a:t".into(),
+                    status: "FAILED".into(),
+                    cached_locally: false,
+                    xml: Some(BepFile { path_prefix: vec![], name: "a/first/test.xml".into() }),
+                    log: None,
+                },
+                TestResultDetail {
+                    label: "//a:t".into(),
+                    status: "PASSED".into(),
+                    cached_locally: false,
+                    xml: Some(BepFile { path_prefix: vec![], name: "a/second/test.xml".into() }),
+                    log: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let groups = group_by_label(&bep);
+        // only the LAST attempt's xml is reported
+        assert_eq!(groups, [("//a:t".to_string(), vec!["a/second/test.xml".to_string()])]);
+    }
+
+    #[test]
     fn junit_error_case() {
         let xml = r#"<testsuite><testcase name="e"><error message="boom"/></testcase></testsuite>"#;
         let cases = parse_test_xml(xml.as_bytes());
@@ -452,14 +516,4 @@ mod tests {
         assert_eq!(cases[0].message.as_deref(), Some("boom"));
     }
 
-    #[test]
-    fn test_result_detail_flows() {
-        let _ = TestResultDetail {
-            label: "//a:t".into(),
-            status: "PASSED".into(),
-            cached_locally: false,
-            xml: None,
-            log: None,
-        };
-    }
 }

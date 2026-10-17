@@ -56,7 +56,7 @@ fn walk_packages(
     if is_package_dir(dir) {
         out.push(pkg_to_spec(pkg));
         if let Some(m) = build_file_mtime(dir) {
-            *max_mtime = Some(m);
+            *max_mtime = Some((*max_mtime).map_or(m, |prev| prev.max(m)));
         }
     }
     let Ok(read) = std::fs::read_dir(dir) else { return };
@@ -111,13 +111,22 @@ fn pkg_to_spec(pkg: &str) -> String {
 /// Filter synced target labels against the project view's exclude patterns
 /// (`targets:` entries starting with `-`, incl. `//path/...` wildcards).
 pub fn label_is_excluded(label: &str, excludes: &[String]) -> bool {
+    fn label_in_package(label: &str, pkg: &str) -> bool {
+        // `//pkg` forms: the package's own label, a subpackage, or a rule in it
+        label == pkg
+            || label.starts_with(&format!("{pkg}/"))
+            || label.starts_with(&format!("{pkg}:"))
+    }
+
     excludes.iter().any(|ex| {
         let ex = ex.strip_prefix('-').unwrap_or(ex);
         if let Some(prefix) = ex.strip_suffix("/...") {
-            label == prefix || label.starts_with(&format!("{prefix}/"))
+            label_in_package(label, prefix)
         } else if let Some(pkg) = ex.strip_suffix(":all") {
             let pkg = pkg.trim_start_matches("//");
-            label == ex || label.starts_with(&format!("//{pkg}/"))
+            // the //pkg:all wildcard covers subpackages AND rules in the
+            // package itself (//pkg:lib)
+            label_in_package(label, &format!("//{pkg}"))
         } else {
             label == ex
         }
@@ -191,6 +200,15 @@ mod tests {
         // excludes filter post-query, not the spec list itself
         assert_eq!(specs, ["//pkg:all"]);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn wildcard_covers_package_root_rules() {
+        // bug regression: //-pkg:all wildcards must exclude rules in the
+        // package itself, not only in subpackages
+        assert!(label_is_excluded("//pkg:lib", &["-//pkg:all".into()]));
+        assert!(label_is_excluded("//pkg:lib", &["-//pkg/...".into()]));
+        assert!(label_is_excluded("//pkg", &["-//pkg/...".into()]));
     }
 
     #[test]
