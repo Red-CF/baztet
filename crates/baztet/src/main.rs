@@ -18,6 +18,10 @@ struct Cli {
     #[arg(long, global = true)]
     workspace: Option<Utf8PathBuf>,
 
+    /// project view file (defaults to <workspace>/.bazelproject)
+    #[arg(long, global = true)]
+    project_view: Option<Utf8PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -26,9 +30,6 @@ struct Cli {
 enum Command {
     /// Sync the project: query phase + aspect phase, save the snapshot.
     Sync {
-        /// project view file (defaults to <workspace>/.bazelproject)
-        #[arg(long)]
-        project_view: Option<Utf8PathBuf>,
         /// print the resulting snapshot as JSON to stdout
         #[arg(long)]
         json: bool,
@@ -91,9 +92,6 @@ enum Command {
     },
     /// List imported run configurations (recipes) from the project view.
     Recipes {
-        /// project view file (defaults to <workspace>/.bazelproject)
-        #[arg(long)]
-        project_view: Option<Utf8PathBuf>,
         /// run one recipe: `baztet test --recipe acceptance-tests`
         #[arg(long, short)]
         run: Option<String>,
@@ -187,10 +185,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     }
 
     match &cli.command {
-        Command::Sync { project_view, json, fresh, fast } => {
+        Command::Sync { json, fresh, fast } => {
+            let _project_view = &cli.project_view;
             let runner = discover(cli).await?;
             let pv_path =
-                project_view.clone().unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
+                cli.project_view.clone().unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
             if !pv_path.is_file() {
                 anyhow::bail!("project view not found at {pv_path}");
             }
@@ -283,9 +282,10 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(exit_for("coverage", result.code))
         }
-        Command::Recipes { project_view, run, json } => {
+        Command::Recipes { run, json } => {
+            let _project_view = &cli.project_view;
             let runner = discover(cli).await?;
-            let pv = load_pv(&runner, project_view.as_ref())?;
+            let pv = load_pv(&runner, cli.project_view.as_ref())?;
             let mut recipes: Vec<Recipe> = Vec::new();
             let mut missing = 0usize;
             for path in &pv.import_run_configurations {
@@ -433,26 +433,32 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             };
             let graph = &snapshot.graph;
             let labels: Vec<String> = if *reverse {
-                let mut out = vec![];
-                let mut seen = HashSet::new();
-                let mut queue = vec![idx];
-                let mut pos = 0;
-                if *transitive {
-                    seen.insert(idx);
-                }
-                while pos < queue.len() {
-                    let node_idx = queue[pos];
-                    pos += 1;
-                    for dep in graph.reverse_deps(node_idx) {
-                        let dep_idx = graph.index_of(&dep.label).unwrap();
-                        if seen.insert(dep_idx) {
-                            out.push(dep.label.clone());
-                            queue.push(dep_idx);
+                if !*transitive {
+                    let mut out: Vec<String> = graph
+                        .reverse_deps_indices(idx)
+                        .into_iter()
+                        .filter_map(|i| graph.get_by_index(i).map(|t| t.label.clone()))
+                        .collect();
+                    out.sort();
+                    out
+                } else {
+                    let mut out = vec![];
+                    let mut seen = HashSet::new();
+                    let mut queue = vec![idx];
+                    let mut pos = 0;
+                    while pos < queue.len() {
+                        let node_idx = queue[pos];
+                        pos += 1;
+                        for dep_idx in graph.reverse_deps_indices(node_idx) {
+                            if seen.insert(dep_idx) {
+                                out.push(graph.get_by_index(dep_idx).unwrap().label.clone());
+                                queue.push(dep_idx);
+                            }
                         }
                     }
+                    out.sort();
+                    out
                 }
-                out.sort();
-                out
             } else {
                 let direct = &graph.get_by_index(idx).unwrap().deps;
                 let indices = if *transitive { graph.transitive_deps(idx) } else { direct.clone() };
@@ -464,6 +470,12 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             };
             for l in &labels {
                 println!("{l}");
+            }
+            // rule inputs outside the graph: external deps, generated files
+            if !*reverse {
+                for u in graph.unlinked_deps(idx) {
+                    println!("# unlinked: {u}");
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -516,6 +528,17 @@ fn load_snapshot(ws_root: Utf8PathBuf) -> anyhow::Result<baztet_snapshot::Snapsh
 /// Discover workspace + probe the bazel binary.
 async fn discover(cli: &Cli) -> anyhow::Result<BazelRunner> {
     let ws = workspace_of(cli)?;
-    let binary = cli.bazel.as_deref().unwrap_or("bazel");
-    Ok(BazelRunner::discover(binary, &ws).await?)
+    // --bazel wins; else the project view's `bazel_binary`; else `bazel`
+    let binary = match &cli.bazel {
+        Some(b) => b.clone(),
+        None => {
+            let pv_path = ws.join(".bazelproject");
+            if pv_path.is_file() {
+                baztet_projectview::parse(&pv_path, &ws)?.bazel_binary().to_owned()
+            } else {
+                "bazel".to_string()
+            }
+        }
+    };
+    Ok(BazelRunner::discover(&binary, &ws).await?)
 }

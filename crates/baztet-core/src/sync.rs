@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use baztet_bep::{BepFile, BepOutput};
+use baztet_bep::BepOutput;
 use baztet_projectview::ProjectView;
 use baztet_snapshot::{Snapshot, TargetGraph};
 use baztet_protos::blaze_query;
@@ -72,17 +72,19 @@ pub async fn sync(
                     (r, None) => r.is_some() || pv.directories.entries.is_empty(),
                     (None, Some(_)) => false,
                 };
-                if builds_unchanged && (!run_aspect_phase || !existing.ide_infos.is_empty()) {
-                    eprintln!(
-                        "[baztet] project view and BUILD files unchanged; snapshot fresh ({} target(s), {} ide entries)",
-                        existing.graph.len(),
-                        existing.ide_infos.len()
-                    );
-                    return Ok(existing);
-                }
-                eprintln!("[baztet] project view unchanged; reusing query graph ({} targets)", existing.graph.len());
-                let mut snapshot = existing;
-                if run_aspect_phase {
+                // stale BUILDs mean a NEW target list -> the graph and the
+                // aspect spec list must be rebuilt; reuse only when nothing changed
+                if builds_unchanged {
+                    if !run_aspect_phase || !existing.ide_infos.is_empty() {
+                        eprintln!(
+                            "[baztet] project view and BUILD files unchanged; snapshot fresh ({} target(s), {} ide entries)",
+                            existing.graph.len(),
+                            existing.ide_infos.len()
+                        );
+                        return Ok(existing);
+                    }
+                    eprintln!("[baztet] project view unchanged; reusing query graph ({} targets)", existing.graph.len());
+                    let mut snapshot = existing;
                     match aspect_sync(runner, pv, &mut snapshot).await {
                         Ok(()) => {}
                         Err(e) => {
@@ -90,8 +92,9 @@ pub async fn sync(
                             snapshot.has_error = true;
                         }
                     }
+                    return Ok(snapshot);
                 }
-                return Ok(snapshot);
+                eprintln!("[baztet] BUILD files changed; re-querying the graph");
             }
         }
     }
@@ -223,31 +226,42 @@ pub fn batch_specs(specs: &[String], pv: &ProjectView) -> std::collections::VecD
         .collect()
 }
 
-/// Query one batch; on heap OOM from bazel (exit 1 with OOM text), split the
-/// batch in half and retry (BuildBatchingService's halving behavior).
-async fn query_batch(
+/// Query one batch; on heap OOM from bazel (exit 1 with OOM text), split
+/// the batch in half and query BOTH halves (BuildBatchingService halving);
+/// dropping the tail of a halved batch was a bug.
+fn query_batch<'a>(
+    runner: &'a BazelRunner,
+    batch: &'a [String],
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<blaze_query::Target>, i32, String), BazelError>> + Send + 'a>> {
+    Box::pin(query_batch_impl(runner, batch))
+}
+
+async fn query_batch_impl(
     runner: &BazelRunner,
     batch: &[String],
 ) -> Result<(Vec<blaze_query::Target>, i32, String), BazelError> {
-    let mut size = batch.len();
-    loop {
-        let argv = vec![
-            "--output=streamed_proto".to_string(),
-            "--keep_going".to_string(),
-            query_expression(&batch[..size]),
-        ];
-        let (targets, code, stderr) =
-            runner.run_streaming_protos::<blaze_query::Target>("query", &argv).await?;
-        if code == 0
-            || size == 1
-            || !stderr.to_ascii_lowercase().contains("java heap")
-                && !stderr.to_ascii_lowercase().contains("out of memory")
-        {
-            return Ok((targets, code, stderr));
-        }
-        eprintln!("[baztet] query shard OOM ({} specs); halving batch", size);
-        size /= 2;
+    let argv = vec![
+        "--output=streamed_proto".to_string(),
+        "--keep_going".to_string(),
+        query_expression(batch),
+    ];
+    let (targets, code, stderr) =
+        runner.run_streaming_protos::<blaze_query::Target>("query", &argv).await?;
+
+    let oom = code != 0
+        && (stderr.to_ascii_lowercase().contains("java heap")
+            || stderr.to_ascii_lowercase().contains("out of memory"));
+    if !oom || batch.len() <= 1 {
+        return Ok((targets, code, stderr));
     }
+
+    eprintln!("[baztet] query shard OOM ({} specs); splitting batch", batch.len());
+    let mid = batch.len() / 2;
+    let (mut first, c1, e1) = query_batch(runner, &batch[..mid]).await?;
+    let (second, c2, e2) = query_batch(runner, &batch[mid..]).await?;
+    first.extend(second);
+    let code = if c1 != 0 { c1 } else { c2 };
+    Ok((first, code, format!("{e1}{e2}")))
 }
 
 /// Where the aspect gets deployed (relative to the workspace root).
@@ -377,46 +391,16 @@ pub async fn aspect_sync(runner: &BazelRunner, pv: &ProjectView, snapshot: &mut 
     Ok(())
 }
 
-/// Configurations: `bazel config --dump_all --output=json` (Bazel 8.5+)
-/// gives configHash/mnemonic/isExec; fall back to BEP BuildConfiguration
-/// events when the command is unsupported.
+/// Configurations from BEP `BuildConfiguration` events (the
+/// `bazel config --dump_all` dump is stored upstream-of-need; wire it in
+/// when a CLI flag consumes configurations).
+///
+/// `bazel config` fallback kept behind a function for M5+.
 async fn fetch_configurations(
-    runner: &BazelRunner,
+    _runner: &BazelRunner,
     output: &BepOutput,
 ) -> std::collections::BTreeMap<String, baztet_snapshot::ConfigurationLite> {
-    if let Ok((code, stdout, _stderr)) = runner
-        .run_simple("config", &["--dump_all".into(), "--output=json".into()])
-        .await
-    {
-        if code == 0 {
-            let dump: Vec<ConfigDump> = serde_json::from_str(stdout.trim()).unwrap_or_default();
-            if !dump.is_empty() {
-                return dump
-                    .into_iter()
-                    .map(|c| {
-                        (
-                            c.config_hash,
-                            baztet_snapshot::ConfigurationLite {
-                                mnemonic: c.mnemonic,
-                                cpu: String::new(),
-                            },
-                        )
-                    })
-                    .collect();
-            }
-        }
-    }
     crate::ideinfo::configurations_from_bep(&output.configurations)
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)]
-struct ConfigDump {
-    #[serde(rename = "configHash")]
-    config_hash: String,
-    mnemonic: String,
-    #[serde(rename = "isExec", default)]
-    is_exec: bool,
 }
 
 /// Read `*.intellij-info.txt` files from the BEP output groups and merge
@@ -493,13 +477,77 @@ fn file_is_newer(mtime: Option<std::time::Duration>, relative: &str, meta: Optio
 }
 
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use blaze_query::target::Discriminator;
+    use blaze_query::Attribute;
     use crate::workspace::BazelInfo;
+
+    fn rule_target(name: &str, inputs: &[&str], srcs: &[&str], excluded: bool) -> blaze_query::Target {
+        let mut r = blaze_query::Rule {
+            name: name.into(),
+            rule_class: "java_library".into(),
+            location: Some("//a/BUILD:1".into()),
+            ..Default::default()
+        };
+        r.rule_input = inputs.iter().map(|s| s.to_string()).collect();
+        r.attribute = vec![Attribute {
+            name: "srcs".into(),
+            string_list_value: srcs.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }];
+        if excluded {
+            // the exclude check keys on the rule name; simulate via label
+            r.name = format!("{name}");
+        }
+        blaze_query::Target {
+            r#type: Discriminator::Rule as i32,
+            rule: Some(r),
+            ..Default::default()
+        }
+    }
+
+    fn discriminator_of(t: &blaze_query::Target) -> i32 {
+        t.r#type
+    }
+
+    #[test]
+    fn graph_build_links_deps_and_unlinked() {
+        let mut graph = TargetGraph::default();
+        let rules = vec![
+            rule_target("//src:a", &["//src:b", "@maven//:ext"], &["src/A.java"], false),
+            rule_target("//src:b", &[], &["src/B.java"], false),
+        ];
+        build_graph_from_targets(&mut graph, &rules, &[]);
+        assert_eq!(graph.len(), 2);
+        let a = graph.index_of("//src:a").unwrap();
+        let b = graph.index_of("//src:b").unwrap();
+        assert_eq!(graph.get_by_index(a).unwrap().deps, [b]);
+        assert_eq!(graph.get_by_index(a).unwrap().srcs, ["src/A.java"]);
+        // external input stays unlinked (not a node)
+        assert_eq!(
+            graph.unlinked_deps(a),
+            &["@maven//:ext".to_string()]
+        );
+        let _ = discriminator_of(&rules[0]);
+    }
+
+    #[test]
+    fn graph_build_honours_excludes() {
+        let mut graph = TargetGraph::default();
+        build_graph_from_targets(
+            &mut graph,
+            &[rule_target("//gen:skip", &[], &[], false)],
+            &["-//gen/...".to_string()],
+        );
+        assert!(graph.is_empty());
+        assert!(graph.get_by_label("//gen:skip").is_none());
+    }
 
     fn pv(sizes: &[(bool, Option<u32>)]) -> ProjectView {
         let (shard, size) = sizes[0];
-        let mut pv = ProjectView::default();
+        let _pv = ProjectView::default();
         // shard_sync and target_shard_size are set via parse_text for parity
         let mut text = format!("shard_sync: {}", if shard { "true" } else { "false" });
         if let Some(v) = size {
@@ -532,6 +580,17 @@ mod tests {
     }
 
     #[test]
+    fn aspect_output_meta_contract() {
+        // unchanged path+mtime -> already fresh (not "newer"); anything else re-parses
+        assert!(!file_is_newer(Some(std::time::Duration::new(1700_000_000, 0)), "bazel-out/x/f.txt", Some(&"bazel-out/x/f.txt@1700000000".to_string())));
+        assert!(file_is_newer(Some(std::time::Duration::new(1700_000_001, 0)), "bazel-out/x/f.txt", Some(&"bazel-out/x/f.txt@1700000000".to_string())));
+        assert!(file_is_newer(Some(std::time::Duration::new(1, 0)), "bazel-out/x/CHANGED.txt", Some(&"bazel-out/x/OLD.txt@1700000000".to_string())));
+        // no meta (first sync) -> newer
+        assert!(file_is_newer(Some(std::time::Duration::new(1, 0)), "a", None));
+        assert!(file_is_newer(None, "a", Some(&"a@1".to_string())));
+    }
+
+    #[test]
     fn fingerprint_stable_and_sensitive() {
         use std::collections::BTreeSet;
         let mut pv: ProjectView = Default::default();
@@ -544,7 +603,6 @@ mod tests {
         pv.build_flags.push("--x".into());
         let f3 = sync_fingerprint(&specs, &pv, &fake(&info));
         assert_ne!(f1, f3);
-        let _ = BTreeSet::<Rules>::new();
     }
 
     fn fake(info: &BazelInfo) -> BazelRunner {

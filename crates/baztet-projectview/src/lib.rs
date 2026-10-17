@@ -219,7 +219,27 @@ pub fn parse(
     path: &Utf8PathBuf,
     workspace_root: &Utf8PathBuf,
 ) -> Result<ProjectView, ProjectViewError> {
-    parse_with_depth(path, workspace_root, DEFAULT_IMPORT_DEPTH)
+    // the file's own `import_depth:` overrides the default (the plugin's
+    // ImportDepthSection semantics); a light pre-scan finds it
+    let text = std::fs::read_to_string(path)?;
+    let raw = Raw::parse(&text)?;
+    let depth = raw
+        .scalars
+        .iter()
+        .find(|(k, _, _)| k == "import_depth")
+        .and_then(|(_, v, _)| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_IMPORT_DEPTH);
+    let _ = raw; // re-parsed by parse_with_depth_from_text below
+    apply_raw_and_imports(path, workspace_root, depth, &text)
+}
+
+fn apply_raw_and_imports(
+    path: &Utf8PathBuf,
+    workspace_root: &Utf8PathBuf,
+    remaining_depth: u32,
+    _text: &str,
+) -> Result<ProjectView, ProjectViewError> {
+    parse_with_depth(path, workspace_root, remaining_depth)
 }
 
 /// Parse project view text directly (no file on disk). Imports whose file is
@@ -497,7 +517,7 @@ fn strip_scalar(value: &str) -> &str {
 }
 
 fn resolve_import(path: &str, workspace_root: &Utf8PathBuf) -> Option<Utf8PathBuf> {
-    let trimmed = path.strip_prefix('/')?;
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
     let candidate = workspace_root.join(trimmed);
     candidate.is_file().then_some(candidate)
 }
@@ -585,6 +605,33 @@ directories:
         base.merge(own);
         assert_eq!(base.import_depth(), 1);
         assert_eq!(base.build_flags, ["--base", "--own"]);
+    }
+
+    #[test]
+    fn import_chain_files() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join("baztet-pv-import-test");
+        let ws = camino::Utf8PathBuf::try_from(tmp.clone()).unwrap().join("ws");
+        let _ = fs::remove_dir_all(&ws);
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("base.bazelproject"), "import_depth: 5\nbuild_flags:\n    --base\n")
+            .unwrap();
+        fs::write(ws.join("own.bazelproject"), "import /base.bazelproject\nbuild_flags:\n    --own\n")
+            .unwrap();
+
+        let view = parse(&ws.join("own.bazelproject"), &ws).unwrap();
+        assert_eq!(view.import_depth(), 5); // imported value survives
+        assert_eq!(view.build_flags, ["--base", "--own"]); // own flags land after
+
+        // missing required import errors; missing try_import is skipped
+        fs::write(ws.join("bad.bazelproject"), "import /missing.bazelproject\ntargets:\n    //a:b\n").unwrap();
+        assert!(matches!(
+            parse(&ws.join("bad.bazelproject"), &ws),
+            Err(ProjectViewError::ImportFailure { .. })
+        ));
+        fs::write(ws.join("ok.bazelproject"), "try_import /missing.bazelproject\ntargets:\n    //a:b\n").unwrap();
+        assert!(parse(&ws.join("ok.bazelproject"), &ws).is_ok());
+        let _ = fs::remove_dir_all(&ws);
     }
 
     #[test]
