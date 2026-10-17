@@ -28,22 +28,22 @@ fn bazel_available() -> bool {
         .unwrap_or(false)
 }
 
-fn fixture_tests() -> bool {
+fn fixture_exists() -> bool {
     let ws = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/simple");
     std::path::Path::new(ws).join("MODULE.bazel").is_file()
 }
 
 #[test]
 #[ignore = "requires bazel; run with `cargo test -p baztet -- --ignored`"]
-fn full_query_sync() {
-    if !bazel_available() || !fixture_tests() {
+fn full_sync_and_execution() {
+    if !bazel_available() || !fixture_exists() {
         return;
     }
 
-    // clean previous snapshot
     let ws = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/simple");
     let _ = std::fs::remove_file(format!("{ws}/.baztet/snapshot.bin"));
 
+    // full sync (query + aspect)
     let out = run_bazet(&["sync"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "sync failed:\n{stderr}");
@@ -51,15 +51,43 @@ fn full_query_sync() {
 
     let out = run_bazet(&["targets"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for expected in ["//:bin_b [genrule]", "//:hello [genrule]", "//:lib_a [genrule]"] {
-        assert!(stdout.contains(expected), "missing {expected} in:\n{stdout}");
-    }
+    assert!(stdout.contains("//:hello [sh_binary]"), "missing hello in:\n{stdout}");
+    assert!(stdout.contains("//:unit_test [sh_test]"), "missing unit_test in:\n{stdout}");
+    assert!(stdout.contains("//:failing_test [sh_test]"), "missing failing_test in:\n{stdout}");
 
-    let out = run_bazet(&["deps", "--transitive", "//:bin_b"]);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim(), "//:lib_a");
+    // build everything
+    let out = run_bazet(&["build"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "build failed:\n{stderr}");
 
-    let out = run_bazet(&["deps", "--reverse", "//:lib_a"]);
+    // passing test via recipe (import_run_configurations from the project view)
+    let out = run_bazet(&["recipes"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim(), "//:bin_b");
+    assert!(stdout.contains("simple unit test: test //:unit_test"), "recipes:\n{stdout}");
+
+    let out = run_bazet(&["recipes", "--run", "simple unit test"]);
+    assert!(out.status.success());
+
+    let out = run_bazet(&["test", "--pattern", "unit"]);
+    assert!(out.status.success(), "passing test failed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("PASSED"), "missing PASSED in:\n{stdout}");
+
+    // failing test: exit code 3 (tests failed), FAILED status printed
+    let out = run_bazet(&["test", "--pattern", "failing"]);
+    assert!(!out.status.success(), "failing test must fail");
+    assert_eq!(out.status.code(), Some(3), "failing test exit code");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("FAILED"), "missing FAILED in:\n{stdout}");
+
+    // json report
+    let out = run_bazet(&["test", "--pattern", "unit", "--json"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("\"PASSED\""), "json report:\n{stdout}");
+
+    // run streams the binary output
+    let out = run_bazet(&["run", "//:hello"]);
+    assert!(out.status.success(), "run failed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("hello"), "run output:\n{stdout}");
 }

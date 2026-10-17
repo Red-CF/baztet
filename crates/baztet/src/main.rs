@@ -39,6 +39,59 @@ enum Command {
         #[arg(long)]
         fast: bool,
     },
+    /// Run `bazel build` on labels (or every synced target).
+    #[command(after_help = "Anything after `--` is passed through to bazel.")]
+    Build {
+        labels: Vec<String>,
+        /// args after `--` go straight to bazel
+        #[arg(last = true)]
+        passthrough: Vec<String>,
+    },
+    /// Run `bazel test` with BEP-based results and junit XML case reports.
+    #[command(after_help = "Anything after `--` is passed through to bazel.")]
+    Test {
+        /// labels; defaults to every *_test target in the snapshot
+        labels: Vec<String>,
+        /// value for `--test_filter`
+        #[arg(long)]
+        filter: Option<String>,
+        /// select test targets by label substring instead of listing all
+        #[arg(long, short)]
+        pattern: Option<String>,
+        /// print per-case results from test.xml files
+        #[arg(long)]
+        cases: bool,
+        /// print a machine-readable report to stdout
+        #[arg(long)]
+        json: bool,
+        #[arg(last = true)]
+        passthrough: Vec<String>,
+    },
+    /// Run one target with `bazel run` (output streamed).
+    #[command(after_help = "Anything after `--` is passed through to bazel.")]
+    Run {
+        label: String,
+        #[arg(last = true)]
+        passthrough: Vec<String>,
+    },
+    /// Run `bazel coverage` and point at the merged lcov report.
+    Coverage {
+        labels: Vec<String>,
+        #[arg(last = true)]
+        passthrough: Vec<String>,
+    },
+    /// List imported run configurations (recipes) from the project view.
+    Recipes {
+        /// project view file (defaults to <workspace>/.bazelproject)
+        #[arg(long)]
+        project_view: Option<Utf8PathBuf>,
+        /// run one recipe: `baztet test --recipe acceptance-tests`
+        #[arg(long, short)]
+        run: Option<String>,
+        /// print a machine-readable report to stdout
+        #[arg(long)]
+        json: bool,
+    },
     /// List targets in the synced snapshot.
     Targets {
         /// label substring, or rule kind with '=' prefix (e.g. =java_library)
@@ -82,6 +135,48 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
+    use baztet_core::exec::{ExecSpec, Recipe};
+
+    fn spec(labels: Vec<String>, passthrough: Vec<String>) -> ExecSpec {
+        ExecSpec { labels, extra_args: passthrough, ..Default::default() }
+    }
+
+    fn exit_for(command: &str, code: i32) -> ExitCode {
+        if code != 0 {
+            eprintln!("[baztet] {command} failed with exit code {code}");
+        }
+        exit_code(code)
+    }
+
+    /// Test labels: explicit, else tests matching `pattern`, else all tests.
+    fn test_labels(
+        snapshot: &baztet_snapshot::Snapshot,
+        labels: &[String],
+        pattern: &Option<String>,
+    ) -> anyhow::Result<Vec<String>> {
+        if !labels.is_empty() {
+            return Ok(labels.to_vec());
+        }
+        let tests: Vec<String> = snapshot
+            .graph
+            .iter()
+            .filter(|t| t.kind.ends_with("_test") || t.kind.ends_with("test_suite"))
+            .map(|t| t.label.clone())
+            .collect();
+        if tests.is_empty() {
+            anyhow::bail!("no *_test targets in the snapshot; run `baztet sync` first");
+        }
+        if let Some(p) = pattern {
+            let selected: Vec<String> =
+                tests.iter().filter(|l| l.contains(p.as_str())).cloned().collect();
+            if selected.is_empty() {
+                anyhow::bail!("no test target matches '{p}'");
+            }
+            return Ok(selected);
+        }
+        Ok(tests)
+    }
+
     match &cli.command {
         Command::Sync { project_view, json, fresh, fast } => {
             let runner = discover(cli).await?;
@@ -105,6 +200,141 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 return Ok(exit_code(1));
             }
             Ok(ExitCode::SUCCESS)
+        }
+        Command::Build { labels, passthrough } => {
+            let runner = discover(cli).await?;
+            let snapshot = load_snapshot(workspace_of(&cli.clone())?)?;
+            let labels = default_labels(&snapshot, labels)?;
+            let result = runner.exec_build(&load_pv(&runner, None)?, &spec(labels.clone(), passthrough.clone())).await?;
+            Ok(exit_for("build", result.code))
+        }
+        Command::Test { labels, filter, pattern, cases, json, passthrough } => {
+            let runner = discover(cli).await?;
+            let snapshot = load_snapshot(workspace_of(&cli.clone())?)?;
+            let labels = test_labels(&snapshot, labels, pattern)?;
+            let mut spec = spec(labels, passthrough.clone());
+            spec.test_filter = filter.clone();
+            let result = runner.exec_test(&load_pv(&runner, None)?, &spec).await?;
+
+            let bep = result.bep.as_ref().ok_or_else(|| anyhow::anyhow!("no BEP output"))?;
+            let per_target: Vec<(&String, &String)> =
+                bep.test_summaries.iter().map(|s| (&s.label, &s.status)).collect();
+            let parsed = baztet_core::exec::test_cases_from_bep(&runner, bep);
+            let failed = result.code != 0
+                || bep.test_summaries.iter().any(|s| s.status != "PASSED");
+
+            if *json {
+                let report = serde_json::json!({
+                    "exit_code": result.code,
+                    "summaries": bep.test_summaries,
+                    "cases": parsed.iter().map(|(label, cases)| {
+                        serde_json::json!({
+                            "label": label,
+                            "cases": cases,
+                        })
+                    }).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                for (label, status) in &per_target {
+                    println!("{status:>8}  {label}");
+                }
+                if *cases {
+                    for (label, case_list) in &parsed {
+                        for case in case_list {
+                            if case.status != baztet_core::exec::TestCaseStatus::Passed {
+                                println!("    {case:?}  ({label})");
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(exit_for("test", if failed && result.code == 0 { 3 } else { result.code }))
+        }
+        Command::Run { label, passthrough } => {
+            let runner = discover(cli).await?;
+            let result =
+                runner.exec_run(&load_pv(&runner, None)?, &spec(vec![label.clone()], passthrough.clone())).await?;
+            Ok(exit_for("run", result.code))
+        }
+        Command::Coverage { labels, passthrough } => {
+            let runner = discover(cli).await?;
+            let snapshot = load_snapshot(workspace_of(&cli.clone())?)?;
+            let labels = default_labels(&snapshot, labels)?;
+            let result = runner.exec_coverage(&load_pv(&runner, None)?, &spec(labels.clone(), passthrough.clone())).await?;
+            if let Some(bep) = result.bep.as_ref() {
+                // lcov merged report referenced in BEP build tool logs / outputs
+                let merged: Vec<_> = bep
+                    .named_sets
+                    .values()
+                    .flat_map(|s| &s.files)
+                    .filter(|f| f.name.contains("lcov"))
+                    .map(|f| f.relative_path())
+                    .collect();
+                for path in merged {
+                    println!("{path}");
+                }
+            }
+            Ok(exit_for("coverage", result.code))
+        }
+        Command::Recipes { project_view, run, json } => {
+            let runner = discover(cli).await?;
+            let pv = load_pv(&runner, project_view.as_ref())?;
+            let mut recipes: Vec<Recipe> = Vec::new();
+            let mut missing = 0usize;
+            for path in &pv.import_run_configurations {
+                let rel = path.trim_start_matches('/');
+                match std::fs::read_to_string(runner.workspace_root.join(rel)) {
+                    Ok(xml) => {
+                        if let Some(r) = baztet_core::exec::parse_recipe(&xml) {
+                            recipes.push(r);
+                        }
+                    }
+                    Err(_) => missing += 1,
+                }
+            }
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&recipes)?);
+            } else {
+                if missing > 0 {
+                    eprintln!("[baztet] {missing} recipe(s) not found on disk");
+                }
+                for r in &recipes {
+                    println!("{}: {} {}  ({} env)", r.name, r.command, r.target, r.env.len());
+                }
+            }
+            match run {
+                Some(name) => {
+                    let Some(recipe) = recipes.iter().find(|r| {
+                        r.name.contains(name.as_str())
+                            || name.is_empty()
+                            || r.target.contains(name.as_str())
+                    }) else {
+                        anyhow::bail!("recipe '{name}' not found; see `baztet recipes`");
+                    };
+                    eprintln!("[baztet] recipe '{}': {} {}", recipe.name, recipe.command, recipe.target);
+                    let mut spec = ExecSpec {
+                        labels: vec![recipe.target.clone()],
+                        env: recipe.env.clone(),
+                        ..Default::default()
+                    };
+                    if recipe.command == "test" {
+                        // acceptance/unit recipes run their target; no extra filter
+                        let result = runner.exec_test(&pv, &spec).await?;
+                        Ok(exit_for("test", result.code))
+                    } else if recipe.command == "build" {
+                        let result = runner.exec_build(&pv, &spec).await?;
+                        Ok(exit_for("build", result.code))
+                    } else if recipe.command == "run" {
+                        spec.extra_args.push("--single_top_level_target".into());
+                        let result = runner.exec_run(&pv, &spec).await?;
+                        Ok(exit_for("run", result.code))
+                    } else {
+                        anyhow::bail!("unsupported recipe command: {}", recipe.command);
+                    }
+                }
+                None => Ok(ExitCode::SUCCESS),
+            }
         }
         Command::Targets { filter, json } => {
             let snapshot = load_snapshot(workspace_of(cli)?)?;
@@ -178,6 +408,33 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
+fn default_labels(snapshot: &baztet_snapshot::Snapshot, labels: &[String]) -> anyhow::Result<Vec<String>> {
+    if !labels.is_empty() {
+        return Ok(labels.to_vec());
+    }
+    if snapshot.specified_targets.is_empty() {
+        anyhow::bail!("no targets to build; run `baztet sync` first");
+    }
+    Ok(snapshot.specified_targets.clone())
+}
+
+fn load_pv(runner: &BazelRunner, explicit: Option<&Utf8PathBuf>) -> anyhow::Result<baztet_projectview::ProjectView> {
+    let path = explicit
+        .cloned()
+        .unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
+    if !path.is_file() {
+        if explicit.is_some() {
+            anyhow::bail!("project view not found at {path}");
+        }
+        eprintln!("[baztet] no project view at {path}; running with default flags");
+        return Ok(Default::default());
+    }
+    Ok(baztet_projectview::parse(&path, &runner.workspace_root)?)
+}
+
+/// Project view for exec commands: defaults to `<ws>/.bazelproject`, falls
+/// back to an empty view when the workspace has none (scoped project views
+/// live wherever the user keeps them).
 fn workspace_of(cli: &Cli) -> anyhow::Result<Utf8PathBuf> {
     match &cli.workspace {
         Some(ws) => Ok(ws.clone()),

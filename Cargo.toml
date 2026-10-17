@@ -29,6 +29,7 @@ thiserror = "2"
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 sha2 = "0.10"
+quick-xml = "0.37"
 
 [profile.release]
 lto = true
