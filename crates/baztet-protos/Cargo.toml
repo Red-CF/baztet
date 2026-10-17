@@ -1,5 +1,6 @@
 [package]
 name = "baztet-protos"
+description = "Vendored Bazel and JetBrains intellij-aspect protobufs for the baztet CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "baztet-projectview"
+description = ".bazelproject project view parser (hirschgarten format) used by the baztet CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

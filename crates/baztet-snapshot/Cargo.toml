@@ -1,8 +1,11 @@
 [package]
 name = "baztet-snapshot"
+description = "Target graph snapshot model and persistence for the baztet CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 serde.workspace = true
