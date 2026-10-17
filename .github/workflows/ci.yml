@@ -11,6 +11,9 @@ jobs:
   # only real vulnerabilities fail the check
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
@@ -41,7 +44,7 @@ jobs:
       - run: |
           rustup component add llvm-tools-preview
           cargo install cargo-llvm-cov
-          cargo llvm-cov --all-features --exclude baztet --lcov --output-path lcov.info
+          cargo llvm-cov --workspace --all-features --exclude baztet --lcov --output-path lcov.info
       - name: update gh-pages badge
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

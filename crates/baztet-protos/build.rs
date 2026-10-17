@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
-/// All vendored files live inside this crate so `cargo publish` packages
-/// them (see THIRD_PARTY_NOTICE.md for provenance and licensing).
-
+// All vendored files live inside this crate so `cargo publish` packages
+// them (see THIRD_PARTY_NOTICE.md for provenance and licensing).
 fn main() {
     // hermetic protoc, no system dependency
     std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().expect("vendored protoc"));
