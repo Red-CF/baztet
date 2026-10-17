@@ -20,7 +20,7 @@ homepage = "https://github.com/Red-CF/baztet"
 prost = "0.13"
 prost-types = "0.13"
 prost-build = "0.13"
-prost-reflect = { version = "0.14", features = ["text-format"] }
+prost-reflect = { version = "0.16", features = ["text-format"] }
 protoc-bin-vendored = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "fs", "sync", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
