@@ -45,6 +45,7 @@ impl Rules {
         }
     }
 
+    #[allow(dead_code)] // exercised by tests; the deployer derives names from Rules::ruleset_name
     fn from_ruleset_name(name: &str) -> Option<Rules> {
         Some(match name {
             "@rules_cc" => Rules::Cc,

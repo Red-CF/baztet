@@ -92,40 +92,6 @@ fn string_field(msg: &DynamicMessage, name: &str) -> Option<String> {
     msg.get_field_by_name(name).and_then(|v| v.as_str().map(str::to_owned))
 }
 
-/// Convenience on Value chains.
-trait ValueExt {
-    fn as_message(&self) -> Option<&DynamicMessage>;
-    fn as_str(&self) -> Option<&str>;
-    fn as_list(&self) -> Option<&[Value]>;
-    fn as_string_field(&self, name: &str) -> Option<String>;
-}
-
-impl ValueExt for Value {
-    fn as_message(&self) -> Option<&DynamicMessage> {
-        match self {
-            Value::Message(m) => Some(m),
-            _ => None,
-        }
-    }
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            Value::String(s) => Some(s),
-            _ => None,
-        }
-    }
-    fn as_list(&self) -> Option<&[Value]> {
-        match self {
-            Value::List(l) => Some(l),
-            _ => None,
-        }
-    }
-    fn as_string_field(&self, name: &str) -> Option<String> {
-        self.as_message()?
-            .get_field_by_name(name)
-            .and_then(|v| v.as_str().map(str::to_owned))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
