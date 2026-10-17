@@ -32,7 +32,7 @@ enum Command {
         /// print the resulting snapshot as JSON to stdout
         #[arg(long)]
         json: bool,
-        /// fail on sync errors instead of saving a partial snapshot
+        /// force a full re-query even when the project view is unchanged
         #[arg(long)]
         fresh: bool,
         /// stop after the fast query phase (skip aspect analysis)
@@ -79,6 +79,15 @@ enum Command {
         labels: Vec<String>,
         #[arg(last = true)]
         passthrough: Vec<String>,
+    },
+    /// Check the environment: bazel binary/version, workspace, project view,
+    /// snapshot, aspect deployment.
+    Doctor,
+    /// Benchmarks: startup, proto stream decode, snapshot roundtrip.
+    Bench {
+        /// number of synthetic targets to stream-decode
+        #[arg(long, default_value = "50000")]
+        targets: u64,
     },
     /// List imported run configurations (recipes) from the project view.
     Recipes {
@@ -186,7 +195,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 anyhow::bail!("project view not found at {pv_path}");
             }
             let pv = baztet_projectview::parse(&pv_path, &runner.workspace_root)?;
-            let snapshot = sync_engine::sync(&runner, &pv, !fast).await?;
+            let snapshot = sync_engine::sync(&runner, &pv, !fast, *fresh).await?;
             let path = snapshot.save()?;
             eprintln!(
                 "[baztet] synced {} target(s), {} -> {path}",
@@ -195,9 +204,6 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             );
             if *json {
                 println!("{}", snapshot.to_json(true)?);
-            }
-            if *fresh && snapshot.has_error {
-                return Ok(exit_code(1));
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -335,6 +341,62 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 }
                 None => Ok(ExitCode::SUCCESS),
             }
+        }
+        Command::Doctor => {
+            use std::fmt::Write as DocWrite;
+            let mut report = String::new();
+            let mut ok = true;
+
+            writeln!(report, "baztet doctor")?;
+            // bazel
+            let binary = cli.bazel.as_deref().unwrap_or("bazel");
+            let version = std::process::Command::new(binary).arg("--version").output();
+            match version {
+                Ok(out) if out.status.success() => {
+                    writeln!(report, "bazel: {} ({})", binary, String::from_utf8_lossy(&out.stdout).trim())?;
+                }
+                _ => {
+                    writeln!(report, "bazel: {binary} NOT FOUND or not runnable")?;
+                    ok = false;
+                }
+            }
+            // workspace
+            let ws = workspace_of(cli)?;
+            writeln!(report, "workspace: {ws}")?;
+            // project view
+            let pv_path = ws.join(".bazelproject");
+            match pv_path.is_file() {
+                true => writeln!(report, "project view: {pv_path}")?,
+                false => writeln!(report, "project view: not present (scoped views elsewhere)")?,
+            }
+            // snapshot
+            match baztet_snapshot::Snapshot::load(&ws) {
+                Ok(snapshot) => writeln!(
+                    report,
+                    "snapshot: {} target(s), {} ide entries{}, last fingerprint {:?}",
+                    snapshot.graph.len(),
+                    snapshot.ide_infos.len(),
+                    if snapshot.has_error { " (has errors)" } else { "" },
+                    snapshot.sync_fingerprint,
+                )?,
+                Err(e) => writeln!(report, "snapshot: none ({e})")?,
+            }
+            // aspect dir
+            let aspect = ws.join(baztet_core::sync::ASPECT_PREFIX);
+            match aspect.join("config/aspect.bzl").is_file() {
+                true => writeln!(report, "aspect: deployed at {aspect}")?,
+                false => writeln!(report, "aspect: not deployed yet (first sync) and .bazelbsp (IDE) state unknown; not an error")?,
+            }
+            print!("{report}");
+            Ok(if ok { ExitCode::SUCCESS } else { exit_code(1) })
+        }
+        Command::Bench { targets } => {
+            let result = baztet_core::bench::run(*targets).await?;
+            eprintln!(
+                "[baztet] decoded {} targets in {:?}; 10k-target snapshot roundtrip {:?}",
+                result.decoded, result.decode_duration, result.snapshot_roundtrip
+            );
+            Ok(ExitCode::SUCCESS)
         }
         Command::Targets { filter, json } => {
             let snapshot = load_snapshot(workspace_of(cli)?)?;
