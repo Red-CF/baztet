@@ -1,0 +1,12 @@
+[package]
+name = "baztet-bep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+baztet-protos = { path = "../baztet-protos" }
+prost.workspace = true
+thiserror.workspace = true
+camino.workspace = true
+serde.workspace = true

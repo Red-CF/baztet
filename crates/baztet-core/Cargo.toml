@@ -1,0 +1,20 @@
+[package]
+name = "baztet-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+baztet-protos = { path = "../baztet-protos" }
+baztet-bep = { path = "../baztet-bep" }
+baztet-projectview = { path = "../baztet-projectview" }
+baztet-snapshot = { path = "../baztet-snapshot" }
+prost.workspace = true
+prost-types.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+camino.workspace = true
+sha2.workspace = true

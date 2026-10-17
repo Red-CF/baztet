@@ -1,0 +1,16 @@
+[package]
+name = "baztet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+baztet-core = { path = "../baztet-core" }
+baztet-projectview = { path = "../baztet-projectview" }
+baztet-snapshot = { path = "../baztet-snapshot" }
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+camino.workspace = true
