@@ -253,7 +253,11 @@ impl Snapshot {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, self.to_bytes()?)?;
+        // write tmp then rename: a crash mid-write must not truncate the
+        // snapshot into a "corrupt file" for every later command
+        let tmp = path.with_extension("bin.tmp");
+        std::fs::write(&tmp, self.to_bytes()?)?;
+        std::fs::rename(&tmp, &path)?;
         Ok(path)
     }
 

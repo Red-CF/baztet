@@ -433,25 +433,32 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             };
             let graph = &snapshot.graph;
             let labels: Vec<String> = if *reverse {
-                let mut out = vec![];
-                let mut seen = HashSet::new();
-                let mut queue = vec![idx];
-                let mut pos = 0;
-                if *transitive {
-                    seen.insert(idx);
-                }
-                while pos < queue.len() {
-                    let node_idx = queue[pos];
-                    pos += 1;
-                    for dep_idx in graph.reverse_deps_indices(node_idx) {
-                        if seen.insert(dep_idx) {
-                            out.push(graph.get_by_index(dep_idx).unwrap().label.clone());
-                            queue.push(dep_idx);
+                if !*transitive {
+                    let mut out: Vec<String> = graph
+                        .reverse_deps_indices(idx)
+                        .into_iter()
+                        .filter_map(|i| graph.get_by_index(i).map(|t| t.label.clone()))
+                        .collect();
+                    out.sort();
+                    out
+                } else {
+                    let mut out = vec![];
+                    let mut seen = HashSet::new();
+                    let mut queue = vec![idx];
+                    let mut pos = 0;
+                    while pos < queue.len() {
+                        let node_idx = queue[pos];
+                        pos += 1;
+                        for dep_idx in graph.reverse_deps_indices(node_idx) {
+                            if seen.insert(dep_idx) {
+                                out.push(graph.get_by_index(dep_idx).unwrap().label.clone());
+                                queue.push(dep_idx);
+                            }
                         }
                     }
+                    out.sort();
+                    out
                 }
-                out.sort();
-                out
             } else {
                 let direct = &graph.get_by_index(idx).unwrap().deps;
                 let indices = if *transitive { graph.transitive_deps(idx) } else { direct.clone() };
@@ -521,6 +528,17 @@ fn load_snapshot(ws_root: Utf8PathBuf) -> anyhow::Result<baztet_snapshot::Snapsh
 /// Discover workspace + probe the bazel binary.
 async fn discover(cli: &Cli) -> anyhow::Result<BazelRunner> {
     let ws = workspace_of(cli)?;
-    let binary = cli.bazel.as_deref().unwrap_or("bazel");
-    Ok(BazelRunner::discover(binary, &ws).await?)
+    // --bazel wins; else the project view's `bazel_binary`; else `bazel`
+    let binary = match &cli.bazel {
+        Some(b) => b.clone(),
+        None => {
+            let pv_path = ws.join(".bazelproject");
+            if pv_path.is_file() {
+                baztet_projectview::parse(&pv_path, &ws)?.bazel_binary().to_owned()
+            } else {
+                "bazel".to_string()
+            }
+        }
+    };
+    Ok(BazelRunner::discover(&binary, &ws).await?)
 }

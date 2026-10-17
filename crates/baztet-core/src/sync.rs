@@ -72,17 +72,19 @@ pub async fn sync(
                     (r, None) => r.is_some() || pv.directories.entries.is_empty(),
                     (None, Some(_)) => false,
                 };
-                if builds_unchanged && (!run_aspect_phase || !existing.ide_infos.is_empty()) {
-                    eprintln!(
-                        "[baztet] project view and BUILD files unchanged; snapshot fresh ({} target(s), {} ide entries)",
-                        existing.graph.len(),
-                        existing.ide_infos.len()
-                    );
-                    return Ok(existing);
-                }
-                eprintln!("[baztet] project view unchanged; reusing query graph ({} targets)", existing.graph.len());
-                let mut snapshot = existing;
-                if run_aspect_phase {
+                // stale BUILDs mean a NEW target list -> the graph and the
+                // aspect spec list must be rebuilt; reuse only when nothing changed
+                if builds_unchanged {
+                    if !run_aspect_phase || !existing.ide_infos.is_empty() {
+                        eprintln!(
+                            "[baztet] project view and BUILD files unchanged; snapshot fresh ({} target(s), {} ide entries)",
+                            existing.graph.len(),
+                            existing.ide_infos.len()
+                        );
+                        return Ok(existing);
+                    }
+                    eprintln!("[baztet] project view unchanged; reusing query graph ({} targets)", existing.graph.len());
+                    let mut snapshot = existing;
                     match aspect_sync(runner, pv, &mut snapshot).await {
                         Ok(()) => {}
                         Err(e) => {
@@ -90,8 +92,9 @@ pub async fn sync(
                             snapshot.has_error = true;
                         }
                     }
+                    return Ok(snapshot);
                 }
-                return Ok(snapshot);
+                eprintln!("[baztet] BUILD files changed; re-querying the graph");
             }
         }
     }
@@ -223,31 +226,42 @@ pub fn batch_specs(specs: &[String], pv: &ProjectView) -> std::collections::VecD
         .collect()
 }
 
-/// Query one batch; on heap OOM from bazel (exit 1 with OOM text), split the
-/// batch in half and retry (BuildBatchingService's halving behavior).
-async fn query_batch(
+/// Query one batch; on heap OOM from bazel (exit 1 with OOM text), split
+/// the batch in half and query BOTH halves (BuildBatchingService halving);
+/// dropping the tail of a halved batch was a bug.
+fn query_batch<'a>(
+    runner: &'a BazelRunner,
+    batch: &'a [String],
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<blaze_query::Target>, i32, String), BazelError>> + Send + 'a>> {
+    Box::pin(query_batch_impl(runner, batch))
+}
+
+async fn query_batch_impl(
     runner: &BazelRunner,
     batch: &[String],
 ) -> Result<(Vec<blaze_query::Target>, i32, String), BazelError> {
-    let mut size = batch.len();
-    loop {
-        let argv = vec![
-            "--output=streamed_proto".to_string(),
-            "--keep_going".to_string(),
-            query_expression(&batch[..size]),
-        ];
-        let (targets, code, stderr) =
-            runner.run_streaming_protos::<blaze_query::Target>("query", &argv).await?;
-        if code == 0
-            || size == 1
-            || !stderr.to_ascii_lowercase().contains("java heap")
-                && !stderr.to_ascii_lowercase().contains("out of memory")
-        {
-            return Ok((targets, code, stderr));
-        }
-        eprintln!("[baztet] query shard OOM ({} specs); halving batch", size);
-        size /= 2;
+    let argv = vec![
+        "--output=streamed_proto".to_string(),
+        "--keep_going".to_string(),
+        query_expression(batch),
+    ];
+    let (targets, code, stderr) =
+        runner.run_streaming_protos::<blaze_query::Target>("query", &argv).await?;
+
+    let oom = code != 0
+        && (stderr.to_ascii_lowercase().contains("java heap")
+            || stderr.to_ascii_lowercase().contains("out of memory"));
+    if !oom || batch.len() <= 1 {
+        return Ok((targets, code, stderr));
     }
+
+    eprintln!("[baztet] query shard OOM ({} specs); splitting batch", batch.len());
+    let mid = batch.len() / 2;
+    let (mut first, c1, e1) = query_batch(runner, &batch[..mid]).await?;
+    let (second, c2, e2) = query_batch(runner, &batch[mid..]).await?;
+    first.extend(second);
+    let code = if c1 != 0 { c1 } else { c2 };
+    Ok((first, code, format!("{e1}{e2}")))
 }
 
 /// Where the aspect gets deployed (relative to the workspace root).
