@@ -103,7 +103,7 @@ jobs:
           mkdir -p bins
           EXT=$([ "$RUNNER_OS" = "Windows" ] && echo .exe || echo "")
           cp "target/release/baztet$EXT" "bins/baztet-$RUNNER_OS-$RUNNER_ARCH$EXT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: baztet-${{ runner.os }}
           path: bins/
