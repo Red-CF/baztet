@@ -1,9 +1,9 @@
-# baztet 🦌
+# baztet 🐈
 
 [![CI](https://github.com/Red-CF/baztet/actions/workflows/ci.yml/badge.svg)](https://github.com/Red-CF/baztet/actions/workflows/ci.yml)
 [![coverage](https://raw.githubusercontent.com/Red-CF/baztet/gh-pages/coverage.svg)](https://github.com/Red-CF/baztet/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/baztet.svg)](https://crates.io/crates/baztet)
-[![downloads](https://img.shields.io/crates/d/baztet.svg)](https://crates.io/crates/d/baztet)
+[![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![macOS ARM64](https://img.shields.io/badge/macOS-ARM64-999999.svg)](https://github.com/Red-CF/baztet/releases)
 [![macOS Intel](https://img.shields.io/badge/macOS-Intel-999999.svg)](https://github.com/Red-CF/baztet/releases)
 [![Linux](https://img.shields.io/badge/Linux-X64-fcc624.svg)](https://github.com/Red-CF/baztet/releases)
@@ -21,6 +21,13 @@ It understands the plugin's world: `.bazelproject` project views (including
 the sections the plugin generates: `test_sources`, `workspace_type`,
 `import_run_configurations`, ...), your `.bazel/*.xml` run configurations,
 test filters, and sharded syncs.
+
+### The name
+
+**baz** + **tet**: a wrapper around the Bazel CLI that makes the work as
+simple as the IDE's one sync button, from any terminal, with no IDE
+attached. And **Bastet**, the Egyptian goddess, always shown as a domestic
+cat — the tool stays out of your way and pounces on exactly what changed.
 
 ## Install
 
