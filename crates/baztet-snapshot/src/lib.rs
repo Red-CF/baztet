@@ -273,7 +273,9 @@ impl Snapshot {
 }
 
 /// Snapshot file location: `$BAZTET_CACHE_DIR/<root-hash>/snapshot.bin`, or
-/// the per-OS cache dir when unset. Hash key = the workspace root path.
+/// the per-OS cache dir when unset. Hash key = the canonicalized workspace
+/// root path (canonicalization keeps `.`, `..`, and symlinked roots in one
+/// snapshot; a non-existent root falls back to the literal path).
 pub fn snapshot_path(workspace_root: &Utf8PathBuf) -> Result<Utf8PathBuf, SnapshotError> {
     use sha2::Digest;
 
@@ -288,8 +290,10 @@ pub fn snapshot_path(workspace_root: &Utf8PathBuf) -> Result<Utf8PathBuf, Snapsh
             }
         },
     };
+    let canonical = std::fs::canonicalize(workspace_root.as_std_path())
+        .unwrap_or_else(|_| workspace_root.as_std_path().to_path_buf());
     let mut hasher = sha2::Sha256::new();
-    hasher.update(workspace_root.as_str().as_bytes());
+    hasher.update(canonical.to_string_lossy().as_bytes());
     let hash = hex(&hasher.finalize());
     Utf8PathBuf::try_from(base.join(&hash[..16]).join("snapshot.bin"))
         .map_err(|e| SnapshotError::Corrupt(e.to_string()))
@@ -300,14 +304,29 @@ fn cache_dir_under(home: std::path::PathBuf) -> std::path::PathBuf {
     {
         home.join("Library/Caches/baztet")
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // %LOCALAPPDATA% when set; else keep the per-home default location
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData/Local"))
+            .join("baztet")
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         home.join(".cache/baztet")
     }
 }
 
 fn home_dir() -> Result<Option<std::path::PathBuf>, SnapshotError> {
-    Ok(std::env::var("HOME").ok().map(std::path::PathBuf::from))
+    // HOME everywhere; USERPROFILE is the Windows spelling
+    Ok(std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from))
 }
 
 fn hex(bytes: &[u8]) -> String {

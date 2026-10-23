@@ -43,19 +43,23 @@ fn phase(n: u8, total: u8, label: &str, secs: f64) {
 }
 
 fn test_status_colored(status: &str) -> String {
-    use owo_colors::OwoColorize as _;
-    let styled = match status {
-        "PASSED" => "PASSED".bright_green().to_string(),
-        "FAILED" => "FAILED".bright_red().to_string(),
-        "FLAKY" | "TIMEOUT" => status.bright_yellow().to_string(),
-        other => other.bright_yellow().to_string(),
-    };
-    format!("{styled:>8}")
+    // pad the plain status first: width formatting on an ANSI-wrapped string
+    // pads against escape bytes, not visible width
+    let padded = format!("{status:>8}");
+    match status {
+        "PASSED" => padded.bright_green().to_string(),
+        "FAILED" => padded.bright_red().to_string(),
+        "FLAKY" | "TIMEOUT" => padded.bright_yellow().to_string(),
+        _ => padded.bright_yellow().to_string(),
+    }
 }
 
-/// Is this BEP status a failure for summary counting?
+/// Does this BEP status make the run fail? Restored 0.2 semantics: anything
+/// that did not pass fails the exit code, because CI gates on it (FLAKY,
+/// CANCELLED and NO_STATUS included; bazel's own non-zero exit also fails
+/// the run upstream of this).
 fn status_is_failure(status: &str) -> bool {
-    matches!(status, "FAILED" | "TIMEOUT")
+    status != "PASSED"
 }
 
 #[derive(Parser)]
@@ -76,6 +80,11 @@ struct Cli {
     /// project view file (defaults to <workspace>/.bazelproject)
     #[arg(long, global = true)]
     project_view: Option<Utf8PathBuf>,
+
+    /// snapshot cache directory (defaults to the platform cache dir;
+    /// env: BAZTET_CACHE_DIR)
+    #[arg(long, global = true, env = "BAZTET_CACHE_DIR")]
+    cache_dir: Option<Utf8PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -178,6 +187,10 @@ enum Command {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // --cache-dir routes into the snapshot crate, which reads the env var
+    if let Some(dir) = &cli.cache_dir {
+        std::env::set_var("BAZTET_CACHE_DIR", dir);
+    }
     match run(&cli).await {
         Ok(code) => code,
         Err(e) => {
@@ -250,7 +263,6 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
 
     match &cli.command {
         Command::Sync { json, fresh, fast } => {
-            let _project_view = &cli.project_view;
             let runner = discover(cli).await?;
             let pv_path = cli
                 .project_view
@@ -261,10 +273,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             }
             let pv = baztet_projectview::parse(&pv_path, &runner.workspace_root)?;
             let report = sync_engine::sync(&runner, &pv, !fast, *fresh).await?;
-            let snapshot = report
-                .snapshot
-                .as_ref()
-                .expect("sync always yields a snapshot");
+            let snapshot = &report.snapshot;
             let path = snapshot.save()?;
 
             match report.reuse {
@@ -458,7 +467,6 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             Ok(exit_for("coverage", result.code))
         }
         Command::Recipes { run, json } => {
-            let _project_view = &cli.project_view;
             let runner = discover(cli).await?;
             let pv = load_pv(&runner, cli.project_view.as_ref())?;
             let mut recipes: Vec<Recipe> = Vec::new();

@@ -33,6 +33,24 @@ fn fixture_exists() -> bool {
     std::path::Path::new(ws).join("MODULE.bazel").is_file()
 }
 
+/// Restores BAZTET_CACHE_DIR on drop: env is process-global, so a panic or
+/// a later test in the same binary must not inherit it. Also removes the
+/// throwaway cache dir.
+struct CacheEnv {
+    _prev: Option<std::ffi::OsString>,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for CacheEnv {
+    fn drop(&mut self) {
+        match &self._prev {
+            Some(v) => std::env::set_var("BAZTET_CACHE_DIR", v),
+            None => std::env::remove_var("BAZTET_CACHE_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 #[test]
 #[ignore = "requires bazel; run with `cargo test -p baztet -- --ignored`"]
 fn full_sync_and_execution() {
@@ -42,8 +60,14 @@ fn full_sync_and_execution() {
 
     // cold sync: point the snapshot cache at a throwaway dir (snapshots
     // live OUTSIDE the workspace since 0.3.0)
+    // cold sync: point the snapshot cache at a throwaway dir (snapshots
+    // live OUTSIDE the workspace since 0.3.0)
     let cache = std::env::temp_dir().join(format!("baztet-test-cache-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&cache);
+    let _env = CacheEnv {
+        _prev: std::env::var("BAZTET_CACHE_DIR").ok().map(std::ffi::OsString::from),
+        dir: cache.clone(),
+    };
     std::env::set_var("BAZTET_CACHE_DIR", &cache);
 
     // full sync (query + aspect)
