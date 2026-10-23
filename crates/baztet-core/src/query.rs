@@ -91,14 +91,14 @@ pub fn batch_specs(specs: &[String], pv: &ProjectView) -> VecDeque<Vec<String>> 
 }
 
 /// Build the target graph from `bazel query`; returns (graph, query_failed).
+/// `specs` comes pre-computed by the caller (one walk feeds the whole run).
 pub async fn query_graph(
     runner: &BazelRunner,
     pv: &ProjectView,
+    specs: &[String],
 ) -> Result<(TargetGraph, bool), BazelError> {
-    let specs = target_specs(pv, runner.workspace_root.as_str());
-
     let mut graph = TargetGraph::default();
-    let mut batches = batch_specs(&specs, pv);
+    let mut batches = batch_specs(specs, pv);
     let mut query_failed = false;
     while let Some(batch) = batches.pop_front() {
         match query_batch(runner, &batch).await {

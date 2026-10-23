@@ -44,20 +44,23 @@ fn phase(n: u8, total: u8, label: &str, secs: f64) {
 
 fn test_status_colored(status: &str) -> String {
     // pad the plain status first: width formatting on an ANSI-wrapped string
-    // pads against escape bytes, not visible width
-    let padded = format!("{status:>8}");
-    match status {
-        "PASSED" => padded.bright_green().to_string(),
-        "FAILED" => padded.bright_red().to_string(),
-        "FLAKY" | "TIMEOUT" => padded.bright_yellow().to_string(),
-        _ => padded.bright_yellow().to_string(),
-    }
+    // pads against escape bytes, not visible width; style after padding and
+    // gate on the stream support
+    format!("{status:>8}")
+        .if_supports_color(Stream::Stdout, |t| {
+            match status {
+                "PASSED" => t.bright_green().to_string(),
+                "FAILED" => t.bright_red().to_string(),
+                _ => t.bright_yellow().to_string(),
+            }
+        })
+        .to_string()
 }
 
-/// Does this BEP status make the run fail? Restored 0.2 semantics: anything
-/// that did not pass fails the exit code, because CI gates on it (FLAKY,
-/// CANCELLED and NO_STATUS included; bazel's own non-zero exit also fails
-/// the run upstream of this).
+/// Does this BEP status make the exit code fail? Any non-PASSED verdict
+/// does (restored 0.2 semantics: CI gates on the exit code, and FLAKY /
+/// CANCELLED / TIMEOUT must not greenlight a run). Display buckets above
+/// are finer than this predicate.
 fn status_is_failure(status: &str) -> bool {
     status != "PASSED"
 }
@@ -189,14 +192,19 @@ enum Command {
     },
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    // parse + env write before any runtime spawns worker threads:
+    // process env is not thread-safe, and BAZTET_CACHE_DIR is read later
     let cli = Cli::parse();
-    // --cache-dir routes into the snapshot crate, which reads the env var
     if let Some(dir) = &cli.cache_dir {
         std::env::set_var("BAZTET_CACHE_DIR", dir);
     }
-    match run(&cli).await {
+    async_main(&cli)
+}
+
+#[tokio::main(flavor = "multi_thread")]
+async fn async_main(cli: &Cli) -> ExitCode {
+    match run(cli).await {
         Ok(code) => code,
         Err(e) => {
             fail(&format!("{e}"));
@@ -389,7 +397,10 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     println!("{}  {label}", test_status_colored(status));
                     match status.as_str() {
                         "PASSED" => pass += 1,
-                        s if status_is_failure(s) => fail += 1,
+                        // test verdicts that count against the exit code;
+                        // anything else (CANCELLED, NO_STATUS, ...) is
+                        // neither passed nor failed by a verdict
+                        "FAILED" | "TIMEOUT" | "FLAKY" => fail += 1,
                         _ => other += 1,
                     }
                 }
@@ -775,7 +786,14 @@ async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     };
     if !refresh {
         if let Ok(snapshot) = baztet_snapshot::Snapshot::load(&ws) {
-            if let Some(text) = &snapshot.bazel_info_text {
+            // reuse the cached info only when the snapshot came from the
+            // same binary: a --bazel swap must not keep the old
+            // execution_root (paths would resolve wrong silently)
+            let cached = snapshot
+                .bazel_info_text
+                .as_ref()
+                .filter(|_| snapshot.bazel_binary.as_deref() == Some(binary.as_str()));
+            if let Some(text) = cached {
                 let info = baztet_core::workspace::parse_info(text);
                 return Ok(BazelRunner::from_cached_info(&binary, ws, info));
             }

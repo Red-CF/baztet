@@ -135,7 +135,7 @@ next one.
    their cache, and nothing is re-parsed.
 
 The snapshot lives OUTSIDE your workspace, zero git noise — and the aspect
-dir is self-ignored (`.baztet/.gitignore`):
+dir is self-ignored (`.baztet/aspect/.gitignore`):
 
 ```
 ~/Library/Caches/baztet/<workspace-hash>/snapshot.bin    # macOS

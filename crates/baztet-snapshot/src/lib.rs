@@ -49,6 +49,10 @@ pub struct Snapshot {
     /// sync refreshes it)
     #[serde(default)]
     pub bazel_info_text: Option<String>,
+    /// bazel binary that produced `bazel_info_text`; the cached text is
+    /// only reused when the requested binary matches
+    #[serde(default)]
+    pub bazel_binary: Option<String>,
     /// workspace configurations seen in BEP, keyed by configuration id
     #[serde(default)]
     pub configurations: BTreeMap<String, ConfigurationLite>,

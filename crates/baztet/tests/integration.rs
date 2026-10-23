@@ -60,8 +60,6 @@ fn full_sync_and_execution() {
 
     // cold sync: point the snapshot cache at a throwaway dir (snapshots
     // live OUTSIDE the workspace since 0.3.0)
-    // cold sync: point the snapshot cache at a throwaway dir (snapshots
-    // live OUTSIDE the workspace since 0.3.0)
     let cache = std::env::temp_dir().join(format!("baztet-test-cache-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&cache);
     let _env = CacheEnv {

@@ -105,7 +105,8 @@ pub fn deploy(
     std::fs::create_dir_all(&deploy_dir)?;
     // self-ignoring dir (same trick as the plugin's .bazelbsp/.gitignore):
     // everything baztet writes under the deploy dir stays invisible to git
-    std::fs::write(deploy_dir.join(".gitignore"), "*\n")?;
+    // (write_if_differs keeps the mtime stable so idempotency holds)
+    write_if_differs(&deploy_dir.join(".gitignore"), "*\n");
 
     let t = Transformers {
         prefix: trim_slashes(prefix),

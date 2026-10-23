@@ -7,13 +7,11 @@ use baztet_bep::BepOutput;
 use baztet_projectview::ProjectView;
 use baztet_snapshot::Snapshot;
 
-use camino::Utf8PathBuf;
-
 use crate::aspect::{self, AspectConfig, Rules};
 use crate::bazel::{BazelError, BazelRunner};
-use crate::expand::{package_build_mtimes, expand_directory_targets};
+use crate::expand::package_build_mtimes;
 pub use crate::query::{batch_specs, target_specs, DEFAULT_SHARD_SIZE};
-pub use crate::reuse::{decide_reuse, sync_fingerprint, Reuse};
+pub use crate::reuse::{decide_reuse, sync_fingerprint, CurrentFacts, RecordedFacts, Reuse};
 
 /// Full sync; `run_aspect_phase=false` stops after the query phase, `force_full` skips the reuse ladder.
 pub async fn sync(
@@ -34,32 +32,57 @@ pub async fn sync(
         .as_ref()
         .and_then(|s| s.build_pkg_mtimes.clone());
 
+    // one walk feeds the ladder, the delta selector and the recording
+    let current_mtimes = package_build_mtimes(pv, runner.workspace_root.as_str());
+    let current = CurrentFacts {
+        build_mtime: current_mtimes.values().max().copied(),
+        pkg_mtimes: current_mtimes.clone(),
+        directories_configured: !pv.directories.entries.is_empty(),
+    };
+
     if let Some(existing) = existing {
         let specs = target_specs(pv, runner.workspace_root.as_str());
-        let current_fp = sync_fingerprint(&specs, pv, runner);
-        let recorded_fp = existing.sync_fingerprint;
-        let decision = decide_reuse(
-            recorded_fp == Some(current_fp) && !existing.graph.is_empty(),
-            existing.build_files_mtime,
-            max_build_mtime(pv, &runner.workspace_root),
-            !pv.directories.entries.is_empty(),
+        let fingerprints_match =
+            existing.sync_fingerprint == Some(sync_fingerprint(&specs, pv, runner))
+                && !existing.graph.is_empty();
+        let recorded = RecordedFacts {
+            build_mtime: existing.build_files_mtime,
+            pkg_mtimes: recorded_pkg_mtimes.clone(),
+        };
+        match decide_reuse(
+            fingerprints_match,
+            &recorded,
+            &current,
             run_aspect_phase,
             !existing.ide_infos.is_empty(),
-        );
-        if decision != Reuse::FullQuery {
-            let mut snapshot = existing;
-            if decision == Reuse::Graph {
+        ) {
+            Reuse::Everything => {
+                let mut snapshot = existing;
+                refresh_snapshot_meta(&mut snapshot, runner, &current_mtimes);
+                return Ok(crate::reuse::SyncReport {
+                    snapshot,
+                    reuse: Reuse::Everything,
+                    query_secs: Some(t0.elapsed().as_secs_f64()),
+                    aspect_secs: None,
+                    parsed: 0,
+                });
+            }
+            Reuse::Graph => {
                 eprintln!("[baztet] project view unchanged; refreshing aspect outputs");
+                let mut snapshot = existing;
                 let all_targets = snapshot.specified_targets.clone();
-                let aspect_secs =
-                    run_aspect_phase_once(runner, pv, &mut snapshot, &all_targets, false).await;
-                let parsed = parse_count();
-                snapshot.build_files_mtime = max_build_mtime(pv, &runner.workspace_root);
-                snapshot.build_pkg_mtimes = Some(package_build_mtimes(
+                // fresh refresh starts clean; a failing aspect re-marks it
+                // below (one transient failure must not stick forever)
+                snapshot.has_error = false;
+                let aspect_secs = run_aspect_phase_once(
+                    runner,
                     pv,
-                    runner.workspace_root.as_str(),
-                ));
-                snapshot.bazel_info_text = runner.info.text.clone();
+                    &mut snapshot,
+                    &all_targets,
+                    false,
+                )
+                .await;
+                refresh_snapshot_meta(&mut snapshot, runner, &current_mtimes);
                 return Ok(crate::reuse::SyncReport {
                     snapshot,
                     reuse: Reuse::Graph,
@@ -67,24 +90,19 @@ pub async fn sync(
                     // measured aspect window for phase 2
                     query_secs: Some(0.0),
                     aspect_secs: Some(aspect_secs),
-                    parsed,
+                    parsed: parse_count(),
                 });
             }
-            return Ok(crate::reuse::SyncReport {
-                snapshot,
-                reuse: Reuse::Everything,
-                query_secs: Some(t0.elapsed().as_secs_f64()),
-                aspect_secs: None,
-                parsed: 0,
-            });
+            Reuse::FullQuery => {}
         }
     }
+    let specs = target_specs(pv, runner.workspace_root.as_str());
 
     // full path: query, then optional aspect phase
-    let (graph, query_failed) = crate::query::query_graph(runner, pv).await?;
+    let (graph, query_failed) = crate::query::query_graph(runner, pv, &specs).await?;
     let query_secs = t0.elapsed().as_secs_f64();
     let mut snapshot = Snapshot::new(runner.workspace_root.clone());
-    snapshot.specified_targets = target_specs(pv, runner.workspace_root.as_str());
+    snapshot.specified_targets = specs;
     snapshot.graph = graph;
     snapshot.has_error = query_failed;
     snapshot.sync_fingerprint = Some(sync_fingerprint(&snapshot.specified_targets, pv, runner));
@@ -97,18 +115,12 @@ pub async fn sync(
         // since the recorded snapshot; everything else keeps cached aspect
         // outputs (this is where the incremental win lives)
         let (targets, delta_ran) =
-            delta_aspect_targets(recorded_pkg_mtimes, pv, &runner.workspace_root, &snapshot.specified_targets);
-        aspect_secs = Some(run_aspect_phase_once(runner, pv, &mut snapshot, &targets, delta_ran).await);
+            delta_aspect_targets(recorded_pkg_mtimes.as_ref(), &current_mtimes, &snapshot.specified_targets);
+        aspect_secs =
+            Some(run_aspect_phase_once(runner, pv, &mut snapshot, &targets, delta_ran).await);
         parsed = parse_count();
     }
-    let current_mtimes = package_build_mtimes(pv, runner.workspace_root.as_str());
-    snapshot.build_files_mtime = max_build_mtime(pv, &runner.workspace_root);
-    snapshot.build_pkg_mtimes = if current_mtimes.is_empty() {
-        None
-    } else {
-        Some(current_mtimes)
-    };
-    snapshot.bazel_info_text = runner.info.text.clone();
+    refresh_snapshot_meta(&mut snapshot, runner, &current_mtimes);
     Ok(crate::reuse::SyncReport {
         reuse: Reuse::FullQuery,
         snapshot,
@@ -118,21 +130,34 @@ pub async fn sync(
     })
 }
 
+/// Record this run's walker facts and the live `bazel info` text. Shared by
+/// all three ladder outcomes so no path persists stale cache keys — derive
+/// off records None (the map's emptiness means "not applicable").
+fn refresh_snapshot_meta(
+    snapshot: &mut Snapshot,
+    runner: &BazelRunner,
+    current_mtimes: &BTreeMap<String, u64>,
+) {
+    snapshot.build_files_mtime = current_mtimes.values().max().copied();
+    snapshot.build_pkg_mtimes = (!current_mtimes.is_empty()).then(|| current_mtimes.clone());
+    snapshot.bazel_info_text = runner.info.text.clone();
+    snapshot.bazel_binary = Some(runner.binary.clone());
+}
+
 /// Aspect-build targets. Delta mode (a recorded per-package mtime map in
 /// the snapshot and non-empty changes): only labels in changed packages,
 /// so bazel re-analyzes just the fraction. Fall back to every specified
 /// target when there is no recorded map, nothing changed, or no label
 /// matched — a narrower list there would leave outputs missing.
 fn delta_aspect_targets(
-    recorded: Option<BTreeMap<String, u64>>,
-    pv: &ProjectView,
-    workspace_root: &Utf8PathBuf,
+    recorded: Option<&BTreeMap<String, u64>>,
+    current_mtimes: &BTreeMap<String, u64>,
     specs: &[String],
 ) -> (Vec<String>, bool) {
     let Some(recorded) = recorded.filter(|r| !r.is_empty() && !specs.is_empty()) else {
         return (specs.to_vec(), false);
     };
-    let changed = changed_packages(&recorded, &package_build_mtimes(pv, workspace_root.as_str()));
+    let changed = changed_packages(recorded, current_mtimes);
     let targets: Vec<String> = changed
         .iter()
         .flat_map(|pkg| {
@@ -179,11 +204,6 @@ async fn run_aspect_phase_once(
         }
     }
     t.elapsed().as_secs_f64()
-}
-
-/// Max BUILD mtime from the package walk (None when derive is off).
-fn max_build_mtime(pv: &ProjectView, workspace_root: &Utf8PathBuf) -> Option<u64> {
-    expand_directory_targets(pv, workspace_root.as_str()).1
 }
 
 /// Where the aspect gets deployed (relative to the workspace root).
@@ -316,7 +336,14 @@ pub async fn aspect_sync(
         .map_err(|e| BazelError::Other(format!("failed to parse BEP: {e}")))?;
 
     // prefer `bazel config --dump_all` (bzlmod config ids); BEP events as fallback
-    snapshot.configurations = fetch_configurations(runner, &output).await;
+    let fetched = fetch_configurations(runner, &output).await;
+    if delta_ran {
+        // a delta BEP only covers the changed subset; merge, don't replace,
+        // or configurations recorded for untouched targets would vanish
+        snapshot.configurations.extend(fetched);
+    } else {
+        snapshot.configurations = fetched;
+    }
 
     merge_ide_infos(runner, &output, snapshot, delta_ran);
 
@@ -353,7 +380,7 @@ fn merge_ide_infos(
     PARSE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     let execution_root = runner.info.execution_root.clone();
 
-    // work items: (ide entry key, BEP key, file path, mtime)
+    // work items: (BEP key, file path, mtime)
     let mut jobs: Vec<(String, camino::Utf8PathBuf, Option<std::time::Duration>)> = Vec::new();
     for key in output.target_outputs.keys() {
         let files = output.files_for_target_group(key, baztet_bep::OUTPUT_GROUP_INFO);
