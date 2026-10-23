@@ -4,7 +4,10 @@ use std::path::PathBuf;
 // them (see THIRD_PARTY_NOTICE.md for provenance and licensing).
 fn main() {
     // hermetic protoc, no system dependency
-    std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().expect("vendored protoc"));
+    std::env::set_var(
+        "PROTOC",
+        protoc_bin_vendored::protoc_bin_path().expect("vendored protoc"),
+    );
 
     let root = PathBuf::from("protos-bazel");
     let aspect_src = PathBuf::from("protos-aspect");
@@ -30,7 +33,11 @@ fn main() {
     copy_tree(&aspect_src.join("bzl"), &out_dir.join("aspect"));
     let mut body = String::from("&[\n");
     for path in walk(&out_dir.join("aspect")) {
-        let rel = path.strip_prefix(out_dir.join("aspect")).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = path
+            .strip_prefix(out_dir.join("aspect"))
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         body.push_str(&format!(
             "    (\"{rel}\", include_bytes!(concat!(env!(\"OUT_DIR\"), \"/aspect/{rel}\"))),\n"
         ));

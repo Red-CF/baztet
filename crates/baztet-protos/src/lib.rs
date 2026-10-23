@@ -52,7 +52,10 @@ pub mod gen {
             pub mod lib {
                 pub mod packages {
                     pub mod metrics {
-                        include!(concat!(env!("OUT_DIR"), "/devtools.build.lib.packages.metrics.rs"));
+                        include!(concat!(
+                            env!("OUT_DIR"),
+                            "/devtools.build.lib.packages.metrics.rs"
+                        ));
                     }
                 }
             }
@@ -94,11 +97,9 @@ mod tests {
     #[test]
     fn text_format_parse() {
         let desc = crate::target_ide_info_descriptor();
-        let msg = prost_reflect::DynamicMessage::parse_text_format(
-            desc,
-            r#"key { label: "//x:lib" }"#,
-        )
-        .expect("textproto must parse");
+        let msg =
+            prost_reflect::DynamicMessage::parse_text_format(desc, r#"key { label: "//x:lib" }"#)
+                .expect("textproto must parse");
         let label = msg
             .get_field_by_name("key")
             .unwrap()
@@ -114,8 +115,7 @@ mod tests {
         // prost-reflect rejects unknown fields (unlike the Kotlin SDK parser);
         // callers must treat a failed parse as an unparseable target and skip it.
         let desc = crate::target_ide_info_descriptor();
-        let msg =
-            prost_reflect::DynamicMessage::parse_text_format(desc, "not_a_known_field: 1");
+        let msg = prost_reflect::DynamicMessage::parse_text_format(desc, "not_a_known_field: 1");
         assert!(msg.is_err());
     }
 
@@ -137,7 +137,9 @@ mod tests {
         assert!(gen::TargetIdeInfo::decode(i.encode_to_vec().as_ref()).is_ok());
 
         let pool = crate::descriptor_pool();
-        assert!(pool.get_message_by_name("build_event_stream.BuildEvent").is_some());
+        assert!(pool
+            .get_message_by_name("build_event_stream.BuildEvent")
+            .is_some());
         assert!(pool.get_message_by_name("blaze_query.Target").is_some());
     }
 

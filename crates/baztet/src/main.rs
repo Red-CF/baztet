@@ -1,14 +1,69 @@
-//! baztet CLI: standalone sync/execution tool for Bazel projects.
-
 use std::collections::HashSet;
 use std::process::ExitCode;
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use baztet_core::{sync as sync_engine, BazelError, BazelRunner};
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
+// ---- UI: stderr presentation; --json and machine outputs stay untouched ---
+
+use owo_colors::OwoColorize;
+use owo_colors::Stream;
+
+fn ok(msg: &str) {
+    eprintln!(
+        "{}",
+        format!("✓ {msg}").if_supports_color(Stream::Stderr, |t| t.green().to_string())
+    );
+}
+
+fn warn(msg: &str) {
+    eprintln!(
+        "{}",
+        format!("! {msg}").if_supports_color(Stream::Stderr, |t| t.yellow().to_string())
+    );
+}
+
+fn fail(msg: &str) {
+    eprintln!(
+        "{}",
+        format!("✗ {msg}").if_supports_color(Stream::Stderr, |t| t.red().to_string())
+    );
+}
+
+fn phase(n: u8, total: u8, label: &str, secs: f64) {
+    eprintln!(
+        "{}",
+        format!("[{n}/{total}] {label} ({secs:.1}s)")
+            .if_supports_color(Stream::Stderr, |t| t.blue().to_string())
+    );
+}
+
+fn test_status_colored(status: &str) -> String {
+    use owo_colors::OwoColorize as _;
+    let styled = match status {
+        "PASSED" => "PASSED".bright_green().to_string(),
+        "FAILED" => "FAILED".bright_red().to_string(),
+        "FLAKY" | "TIMEOUT" => status.bright_yellow().to_string(),
+        other => other.bright_yellow().to_string(),
+    };
+    format!("{styled:>8}")
+}
+
+/// Is this BEP status a failure for summary counting?
+fn status_is_failure(status: &str) -> bool {
+    matches!(status, "FAILED" | "TIMEOUT")
+}
+
 #[derive(Parser)]
-#[command(name = "baztet", version, about = "Standalone Bazel project sync and execution tool")]
+#[command(
+    name = "baztet",
+    version,
+    about = "Standalone Bazel project sync and execution tool"
+)]
 struct Cli {
     /// path to the bazel binary (project view `bazel_binary` overrides)
     #[arg(long, global = true, env = "BAZTET_BAZEL")]
@@ -126,7 +181,10 @@ async fn main() -> ExitCode {
     match run(&cli).await {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("[baztet] error: {e:#}");
+            fail(&format!("{e}"));
+            for cause in e.chain().skip(1) {
+                eprintln!("  ↳ {cause}");
+            }
             for cause in e.chain() {
                 if let Some(BazelError::Failure(_, code, _)) = cause.downcast_ref() {
                     return exit_code(*code);
@@ -145,7 +203,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     use baztet_core::exec::{ExecSpec, Recipe};
 
     fn spec(labels: Vec<String>, passthrough: Vec<String>) -> ExecSpec {
-        ExecSpec { labels, extra_args: passthrough, ..Default::default() }
+        ExecSpec {
+            labels,
+            extra_args: passthrough,
+            ..Default::default()
+        }
     }
 
     fn exit_for(command: &str, code: i32) -> ExitCode {
@@ -155,7 +217,6 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         exit_code(code)
     }
 
-    /// Test labels: explicit, else tests matching `pattern`, else all tests.
     fn test_labels(
         snapshot: &baztet_snapshot::Snapshot,
         labels: &[String],
@@ -174,8 +235,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             anyhow::bail!("no *_test targets in the snapshot; run `baztet sync` first");
         }
         if let Some(p) = pattern {
-            let selected: Vec<String> =
-                tests.iter().filter(|l| l.contains(p.as_str())).cloned().collect();
+            let selected: Vec<String> = tests
+                .iter()
+                .filter(|l| l.contains(p.as_str()))
+                .cloned()
+                .collect();
             if selected.is_empty() {
                 anyhow::bail!("no test target matches '{p}'");
             }
@@ -188,32 +252,88 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         Command::Sync { json, fresh, fast } => {
             let _project_view = &cli.project_view;
             let runner = discover(cli).await?;
-            let pv_path =
-                cli.project_view.clone().unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
+            let pv_path = cli
+                .project_view
+                .clone()
+                .unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
             if !pv_path.is_file() {
                 anyhow::bail!("project view not found at {pv_path}");
             }
             let pv = baztet_projectview::parse(&pv_path, &runner.workspace_root)?;
-            let snapshot = sync_engine::sync(&runner, &pv, !fast, *fresh).await?;
+            let report = sync_engine::sync(&runner, &pv, !fast, *fresh).await?;
+            let snapshot = report
+                .snapshot
+                .as_ref()
+                .expect("sync always yields a snapshot");
             let path = snapshot.save()?;
-            eprintln!(
-                "[baztet] synced {} target(s), {} -> {path}",
+
+            match report.reuse {
+                sync_engine::Reuse::Everything => warn(&format!(
+                    "nothing changed: snapshot reused ({} target(s), {} ide entries)",
+                    snapshot.graph.len(),
+                    snapshot.ide_infos.len()
+                )),
+                sync_engine::Reuse::Graph => {
+                    phase(
+                        1,
+                        2,
+                        "query graph reused",
+                        report.query_secs.unwrap_or_default(),
+                    );
+                    phase(
+                        2,
+                        2,
+                        "aspect outputs",
+                        report.aspect_secs.unwrap_or_default(),
+                    );
+                }
+                sync_engine::Reuse::FullQuery => {
+                    phase(1, 2, "query", report.query_secs.unwrap_or_default());
+                    // the aspect phase prints only when it ran (--fast skips it)
+                    if let Some(secs) = report.aspect_secs {
+                        phase(2, 2, "aspect build + BEP", secs);
+                    }
+                }
+            }
+
+            let line = format!(
+                "synced {} target(s) · {} ide entries · snapshot {path}",
                 snapshot.graph.len(),
-                if snapshot.has_error { "with errors" } else { "ok" },
+                snapshot.ide_infos.len()
             );
+            if snapshot.has_error {
+                fail(&format!("{line} (some outputs failed)"));
+            } else {
+                ok(&line);
+            }
             if *json {
                 println!("{}", snapshot.to_json(true)?);
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Build { labels, passthrough } => {
+        Command::Build {
+            labels,
+            passthrough,
+        } => {
             let runner = discover(cli).await?;
             let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = default_labels(&snapshot, labels)?;
-            let result = runner.exec_build(&load_pv(&runner, None)?, &spec(labels.clone(), passthrough.clone())).await?;
+            let result = runner
+                .exec_build(
+                    &load_pv(&runner, None)?,
+                    &spec(labels.clone(), passthrough.clone()),
+                )
+                .await?;
             Ok(exit_for("build", result.code))
         }
-        Command::Test { labels, filter, pattern, cases, json, passthrough } => {
+        Command::Test {
+            labels,
+            filter,
+            pattern,
+            cases,
+            json,
+            passthrough,
+        } => {
             let runner = discover(cli).await?;
             let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = test_labels(&snapshot, labels, pattern)?;
@@ -221,12 +341,21 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             spec.test_filter = filter.clone();
             let result = runner.exec_test(&load_pv(&runner, None)?, &spec).await?;
 
-            let bep = result.bep.as_ref().ok_or_else(|| anyhow::anyhow!("no BEP output"))?;
-            let per_target: Vec<(&String, &String)> =
-                bep.test_summaries.iter().map(|s| (&s.label, &s.status)).collect();
+            let bep = result
+                .bep
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("no BEP output"))?;
+            let per_target: Vec<(&String, &String)> = bep
+                .test_summaries
+                .iter()
+                .map(|s| (&s.label, &s.status))
+                .collect();
             let parsed = baztet_core::exec::test_cases_from_bep(&runner, bep);
             let failed = result.code != 0
-                || bep.test_summaries.iter().any(|s| s.status != "PASSED");
+                || bep
+                    .test_summaries
+                    .iter()
+                    .any(|s| status_is_failure(&s.status));
 
             if *json {
                 let report = serde_json::json!({
@@ -241,32 +370,78 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 });
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
+                let (mut pass, mut fail, mut other) = (0usize, 0usize, 0usize);
                 for (label, status) in &per_target {
-                    println!("{status:>8}  {label}");
+                    println!("{}  {label}", test_status_colored(status));
+                    match status.as_str() {
+                        "PASSED" => pass += 1,
+                        s if status_is_failure(s) => fail += 1,
+                        _ => other += 1,
+                    }
                 }
                 if *cases {
+                    use baztet_core::exec::TestCaseStatus;
                     for (label, case_list) in &parsed {
                         for case in case_list {
-                            if case.status != baztet_core::exec::TestCaseStatus::Passed {
-                                println!("    {case:?}  ({label})");
+                            if !matches!(
+                                case.status,
+                                TestCaseStatus::Failed | TestCaseStatus::Error
+                            ) {
+                                continue;
                             }
+                            let status = if case.status == TestCaseStatus::Error {
+                                "ERROR"
+                            } else {
+                                "FAILED"
+                            };
+                            println!(
+                                "    {:>8}  {}#{}  {}  ({label})",
+                                status,
+                                case.class_name,
+                                case.name,
+                                case.message.as_deref().unwrap_or("no message"),
+                            );
                         }
                     }
                 }
+                let summary = format!(
+                    "{pass} passed · {fail} failed · {other} other ({})",
+                    per_target.len()
+                );
+                println!("{}", summary);
             }
-            Ok(exit_for("test", if failed && result.code == 0 { 3 } else { result.code }))
+            Ok(exit_for(
+                "test",
+                if failed && result.code == 0 {
+                    3
+                } else {
+                    result.code
+                },
+            ))
         }
         Command::Run { label, passthrough } => {
             let runner = discover(cli).await?;
-            let result =
-                runner.exec_run(&load_pv(&runner, None)?, &spec(vec![label.clone()], passthrough.clone())).await?;
+            let result = runner
+                .exec_run(
+                    &load_pv(&runner, None)?,
+                    &spec(vec![label.clone()], passthrough.clone()),
+                )
+                .await?;
             Ok(exit_for("run", result.code))
         }
-        Command::Coverage { labels, passthrough } => {
+        Command::Coverage {
+            labels,
+            passthrough,
+        } => {
             let runner = discover(cli).await?;
             let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = default_labels(&snapshot, labels)?;
-            let result = runner.exec_coverage(&load_pv(&runner, None)?, &spec(labels.clone(), passthrough.clone())).await?;
+            let result = runner
+                .exec_coverage(
+                    &load_pv(&runner, None)?,
+                    &spec(labels.clone(), passthrough.clone()),
+                )
+                .await?;
             if let Some(bep) = result.bep.as_ref() {
                 // lcov merged report referenced in BEP build tool logs / outputs
                 let merged: Vec<_> = bep
@@ -306,7 +481,13 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     eprintln!("[baztet] {missing} recipe(s) not found on disk");
                 }
                 for r in &recipes {
-                    println!("{}: {} {}  ({} env)", r.name, r.command, r.target, r.env.len());
+                    println!(
+                        "{}: {} {}  ({} env)",
+                        r.name,
+                        r.command,
+                        r.target,
+                        r.env.len()
+                    );
                 }
             }
             match run {
@@ -318,7 +499,10 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     }) else {
                         anyhow::bail!("recipe '{name}' not found; see `baztet recipes`");
                     };
-                    eprintln!("[baztet] recipe '{}': {} {}", recipe.name, recipe.command, recipe.target);
+                    eprintln!(
+                        "[baztet] recipe '{}': {} {}",
+                        recipe.name, recipe.command, recipe.target
+                    );
                     let mut spec = ExecSpec {
                         labels: vec![recipe.target.clone()],
                         env: recipe.env.clone(),
@@ -353,7 +537,12 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             let version = std::process::Command::new(binary).arg("--version").output();
             match version {
                 Ok(out) if out.status.success() => {
-                    writeln!(report, "bazel: {} ({})", binary, String::from_utf8_lossy(&out.stdout).trim())?;
+                    writeln!(
+                        report,
+                        "bazel: {} ({})",
+                        binary,
+                        String::from_utf8_lossy(&out.stdout).trim()
+                    )?;
                 }
                 _ => {
                     writeln!(report, "bazel: {binary} NOT FOUND or not runnable")?;
@@ -376,7 +565,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     "snapshot: {} target(s), {} ide entries{}, last fingerprint {:?}",
                     snapshot.graph.len(),
                     snapshot.ide_infos.len(),
-                    if snapshot.has_error { " (has errors)" } else { "" },
+                    if snapshot.has_error {
+                        " (has errors)"
+                    } else {
+                        ""
+                    },
                     snapshot.sync_fingerprint,
                 )?,
                 Err(e) => writeln!(report, "snapshot: none ({e})")?,
@@ -423,7 +616,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Deps { label, reverse, transitive } => {
+        Command::Deps {
+            label,
+            reverse,
+            transitive,
+        } => {
             if !label.starts_with("//") && !label.starts_with('@') {
                 anyhow::bail!("not a bazel label: {label}");
             }
@@ -461,7 +658,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                 }
             } else {
                 let direct = &graph.get_by_index(idx).unwrap().deps;
-                let indices = if *transitive { graph.transitive_deps(idx) } else { direct.clone() };
+                let indices = if *transitive {
+                    graph.transitive_deps(idx)
+                } else {
+                    direct.clone()
+                };
                 indices
                     .into_iter()
                     .skip(if *transitive { 1 } else { 0 })
@@ -482,7 +683,10 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
-fn default_labels(snapshot: &baztet_snapshot::Snapshot, labels: &[String]) -> anyhow::Result<Vec<String>> {
+fn default_labels(
+    snapshot: &baztet_snapshot::Snapshot,
+    labels: &[String],
+) -> anyhow::Result<Vec<String>> {
     if !labels.is_empty() {
         return Ok(labels.to_vec());
     }
@@ -492,7 +696,10 @@ fn default_labels(snapshot: &baztet_snapshot::Snapshot, labels: &[String]) -> an
     Ok(snapshot.specified_targets.clone())
 }
 
-fn load_pv(runner: &BazelRunner, explicit: Option<&Utf8PathBuf>) -> anyhow::Result<baztet_projectview::ProjectView> {
+fn load_pv(
+    runner: &BazelRunner,
+    explicit: Option<&Utf8PathBuf>,
+) -> anyhow::Result<baztet_projectview::ProjectView> {
     let path = explicit
         .cloned()
         .unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
@@ -506,9 +713,7 @@ fn load_pv(runner: &BazelRunner, explicit: Option<&Utf8PathBuf>) -> anyhow::Resu
     Ok(baztet_projectview::parse(&path, &runner.workspace_root)?)
 }
 
-/// Project view for exec commands: defaults to `<ws>/.bazelproject`, falls
-/// back to an empty view when the workspace has none (scoped project views
-/// live wherever the user keeps them).
+/// Project view for exec commands; empty when the workspace has none.
 fn workspace_of(cli: &Cli) -> anyhow::Result<Utf8PathBuf> {
     match &cli.workspace {
         Some(ws) => Ok(ws.clone()),
@@ -534,7 +739,9 @@ async fn discover(cli: &Cli) -> anyhow::Result<BazelRunner> {
         None => {
             let pv_path = ws.join(".bazelproject");
             if pv_path.is_file() {
-                baztet_projectview::parse(&pv_path, &ws)?.bazel_binary().to_owned()
+                baztet_projectview::parse(&pv_path, &ws)?
+                    .bazel_binary()
+                    .to_owned()
             } else {
                 "bazel".to_string()
             }

@@ -1,8 +1,8 @@
 # Benchmarks
 
 Environment: macOS darwin (Apple Silicon), Bazel 9.3.0 (warm server),
-workspace = a real 9.x bzlmod monorepo, scope = a subpackage tree of ~756
-targets / ~1,083 ide entries. `hyperfine` for warm paths (warmup 2, >=5
+workspace = a real 9.x bzlmod monorepo, scope = a subpackage tree
+(~700-756 targets / ~1,100 ide entries). `hyperfine` for warm paths (warmup 2, >=5
 runs), single measurements for cold syncs (Bazel-side state makes repetition
 meaningless). Reproduce with:
 `BAZTET_REAL_WS=... scripts/bench-real.sh`.
@@ -11,14 +11,14 @@ meaningless). Reproduce with:
 
 | path | time | what it does |
 |---|---|---|
-| `sync --fresh` (cold) | ~53 s wall (~10 s in baztet) | query phase + aspect build + BEP parse + ide summaries |
+| `sync --fresh` (cold) | ~29-53 s wall | query phase + aspect build + BEP parse + ide summaries (parse is rayon-parallel since 0.3.0) |
 | `sync` after BUILD edit | ~46 s | same, re-triggered by BUILD mtime (this used to be silently skipped — fixed) |
-| `sync` unchanged | **~0.65–0.75 s** | fingerprint + BUILD-mtime check only; snapshot reused whole |
+| `sync` unchanged | **~0.7-0.9 s** | fingerprint + BUILD-mtime check only; snapshot reused whole |
 | `sync --fast` | ~0.64 s | reuse path, no aspect phase at all |
 
-The honest reading: sync wall-clock is dominated by Bazel's own analysis
-(~40 s of the 53 s cold). The baztet-side win is the **reuse ladder**:
-identical inputs never touch Bazel.
+The honest reading: sync wall-clock is dominated by Bazel's own analysis;
+the cold range (29-53 s) is Bazel cache warmth, not baztet. The baztet-side
+win is the **reuse ladder**: identical inputs never touch Bazel.
 
 ## Query paths (snapshot load)
 

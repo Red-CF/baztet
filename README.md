@@ -92,14 +92,26 @@ baztet recipes --run "web unit tests"  # run one, with its env vars
 
 ## The snapshot
 
-`sync` writes `<workspace>/.baztet/snapshot.bin` (bincode+zstd, a few hundred
-KB for a thousand-target scope). Incremental by default:
+`sync` writes its snapshot OUTSIDE the workspace, in the platform cache dir:
+
+```
+~/Library/Caches/baztet/<workspace-hash>/snapshot.bin    # macOS
+~/.cache/baztet/<workspace-hash>/snapshot.bin            # Linux
+```
+
+Override with `--cache-dir` or the `BAZTET_CACHE_DIR` env var. bincode+zstd,
+a few hundred KB for a thousand-target scope. Incremental by default:
 
 - unchanged project view -> the query graph is reused, no re-query
 - unchanged BUILD files (max mtime over the package walk) -> the whole
   snapshot is reused, sub-second re-sync
 - changed BUILD files -> only modified `*.intellij-info.txt` aspect outputs
-  are re-parsed (path+mtime reuse)
+  are re-parsed (path+mtime reuse, rayon-parallel in 0.3.0)
+
+Storage: the snapshot lives in your platform cache dir
+(`~/Library/Caches/baztet/<workspace-hash>/` — outside the repo, zero git
+noise) and the aspect dir is self-ignored (`.baztet/.gitignore`), so your
+repo's git history is untouched.
 
 `--fresh` forces a full re-query; `--fast` skips the aspect phase.
 

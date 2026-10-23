@@ -40,20 +40,35 @@ fn full_sync_and_execution() {
         return;
     }
 
-    let ws = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/simple");
-    let _ = std::fs::remove_file(format!("{ws}/.baztet/snapshot.bin"));
+    // cold sync: point the snapshot cache at a throwaway dir (snapshots
+    // live OUTSIDE the workspace since 0.3.0)
+    let cache = std::env::temp_dir().join(format!("baztet-test-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    std::env::set_var("BAZTET_CACHE_DIR", &cache);
 
     // full sync (query + aspect)
     let out = run_bazet(&["sync"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "sync failed:\n{stderr}");
-    assert!(stderr.contains("3 target(s)"), "unexpected output:\n{stderr}");
+    assert!(
+        stderr.contains("3 target(s)"),
+        "unexpected output:\n{stderr}"
+    );
 
     let out = run_bazet(&["targets"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("//:hello [sh_binary]"), "missing hello in:\n{stdout}");
-    assert!(stdout.contains("//:unit_test [sh_test]"), "missing unit_test in:\n{stdout}");
-    assert!(stdout.contains("//:failing_test [sh_test]"), "missing failing_test in:\n{stdout}");
+    assert!(
+        stdout.contains("//:hello [sh_binary]"),
+        "missing hello in:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("//:unit_test [sh_test]"),
+        "missing unit_test in:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("//:failing_test [sh_test]"),
+        "missing failing_test in:\n{stdout}"
+    );
 
     // build everything
     let out = run_bazet(&["build"]);
@@ -63,7 +78,10 @@ fn full_sync_and_execution() {
     // passing test via recipe (import_run_configurations from the project view)
     let out = run_bazet(&["recipes"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("simple unit test: test //:unit_test"), "recipes:\n{stdout}");
+    assert!(
+        stdout.contains("simple unit test: test //:unit_test"),
+        "recipes:\n{stdout}"
+    );
 
     let out = run_bazet(&["recipes", "--run", "simple unit test"]);
     assert!(out.status.success());

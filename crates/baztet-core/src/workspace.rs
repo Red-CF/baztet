@@ -8,8 +8,8 @@ use camino::Utf8PathBuf;
 /// `MODULE.bazel` / `WORKSPACE` / `WORKSPACE.bazel` / `MODULE.bazel.lock`.
 pub fn find_workspace_root(start: &Utf8PathBuf) -> Option<Utf8PathBuf> {
     // REPO.bazel deliberately NOT a marker: it marks a sub-repo inside a
-// monorepo, and bazel's workspace root is MODULE.bazel/WORKSPACE only
-const MARKERS: [&str; 3] = ["MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"];
+    // monorepo, and bazel's workspace root is MODULE.bazel/WORKSPACE only
+    const MARKERS: [&str; 3] = ["MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"];
     let mut dir = start.clone();
     loop {
         if MARKERS.iter().any(|m| dir.join(m).is_file()) {

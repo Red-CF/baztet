@@ -1,5 +1,4 @@
-//! Parsing aspect output files (`*.intellij-info.txt`, `TargetIdeInfo`
-//! textprotos) into snapshot summaries.
+//! Parses `*.intellij-info.txt` aspect outputs (TargetIdeInfo textprotos) into trimmed snapshot summaries.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +16,9 @@ pub fn parse(text: &str) -> Result<DynamicMessage, String> {
 /// Extract (label, configuration) and the trimmed summary from a parsed
 /// TargetIdeInfo.
 pub fn summarize(msg: &DynamicMessage) -> (Option<(String, String)>, IdeSummary) {
-    let key = msg.get_field_by_name("key").and_then(|v| v.as_message().cloned());
+    let key = msg
+        .get_field_by_name("key")
+        .and_then(|v| v.as_message().cloned());
     let identity = key.as_ref().map(|k| {
         let label = string_field(k, "label").unwrap_or_default();
         let configuration = string_field(k, "configuration").unwrap_or_default();
@@ -38,17 +39,29 @@ pub fn summarize(msg: &DynamicMessage) -> (Option<(String, String)>, IdeSummary)
     let srcs: Vec<String> = repeated_relative_paths(msg, "srcs");
 
     let mut java_jars: Vec<JarPair> = Vec::new();
-    if let Some(java_info) = msg.get_field_by_name("java_common").and_then(|v| v.as_message().cloned()) {
+    if let Some(java_info) = msg
+        .get_field_by_name("java_common")
+        .and_then(|v| v.as_message().cloned())
+    {
         for jars in java_info
             .get_field_by_name("jars")
             .and_then(|v| v.as_list().map(<[Value]>::to_vec))
             .unwrap_or_default()
         {
-            let Some(out) = jars.as_message() else { continue };
-            let interface = repeated_relative_paths(out, "interface_jars").into_iter().next();
-            let jar = repeated_relative_paths(out, "binary_jars").into_iter().next();
+            let Some(out) = jars.as_message() else {
+                continue;
+            };
+            let interface = repeated_relative_paths(out, "interface_jars")
+                .into_iter()
+                .next();
+            let jar = repeated_relative_paths(out, "binary_jars")
+                .into_iter()
+                .next();
             if interface.is_some() || jar.is_some() {
-                java_jars.push(JarPair { interface_jar: interface, jar });
+                java_jars.push(JarPair {
+                    interface_jar: interface,
+                    jar,
+                });
             }
         }
     }
@@ -72,7 +85,10 @@ pub fn configurations_from_bep(
         .map(|(id, cfg)| {
             (
                 id.clone(),
-                ConfigurationLite { mnemonic: cfg.mnemonic.clone(), cpu: cfg.cpu.clone() },
+                ConfigurationLite {
+                    mnemonic: cfg.mnemonic.clone(),
+                    cpu: cfg.cpu.clone(),
+                },
             )
         })
         .collect()
@@ -89,7 +105,8 @@ fn repeated_relative_paths(msg: &DynamicMessage, field: &str) -> Vec<String> {
 }
 
 fn string_field(msg: &DynamicMessage, name: &str) -> Option<String> {
-    msg.get_field_by_name(name).and_then(|v| v.as_str().map(str::to_owned))
+    msg.get_field_by_name(name)
+        .and_then(|v| v.as_str().map(str::to_owned))
 }
 
 #[cfg(test)]
@@ -122,8 +139,14 @@ java_common {
         assert_eq!(summary.deps, ["//c:d"]);
         assert_eq!(summary.srcs, ["a/Src.java"]);
         assert_eq!(summary.java_jars.len(), 1);
-        assert_eq!(summary.java_jars[0].interface_jar.as_deref(), Some("bazel-out/x/bin/a/libb-interface.jar"));
-        assert_eq!(summary.java_jars[0].jar.as_deref(), Some("bazel-out/x/bin/a/libb.jar"));
+        assert_eq!(
+            summary.java_jars[0].interface_jar.as_deref(),
+            Some("bazel-out/x/bin/a/libb-interface.jar")
+        );
+        assert_eq!(
+            summary.java_jars[0].jar.as_deref(),
+            Some("bazel-out/x/bin/a/libb.jar")
+        );
     }
 
     #[test]

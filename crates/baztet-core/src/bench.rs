@@ -1,5 +1,4 @@
-//! Startup / decode / snapshot benchmarks (honest ones: bazel itself
-//! dominates wall-clock; these measure our process-level costs).
+//! Process-level benchmarks: varint frame decode and snapshot roundtrip (Bazel itself dominates wall-clock; these measure our costs).
 
 use std::time::{Duration, Instant};
 
@@ -22,7 +21,11 @@ pub async fn run(n: u64) -> anyhow::Result<BenchResult> {
     let snapshot_roundtrip = bench_snapshot();
     let r#final = Instant::now();
     let _ = r#final;
-    Ok(BenchResult { decoded: decoded as u64, decode_duration, snapshot_roundtrip })
+    Ok(BenchResult {
+        decoded: decoded as u64,
+        decode_duration,
+        snapshot_roundtrip,
+    })
 }
 
 /// Count framed messages from an in-process duplex stream.
@@ -103,7 +106,9 @@ fn read_varint(buf: &[u8], pos: &mut usize) -> Option<usize> {
 fn bench_snapshot() -> Duration {
     let mut s = baztet_snapshot::Snapshot::new("/tmp".into());
     for i in 0..10_000u32 {
-        let _ = s.graph.get_or_insert(format!("//pkg{i}:lib"), "java_library", None, vec![]);
+        let _ = s
+            .graph
+            .get_or_insert(format!("//pkg{i}:lib"), "java_library", None, vec![]);
     }
     let t0 = Instant::now();
     let bytes = s.to_bytes().unwrap();

@@ -1,10 +1,4 @@
-//! Build Event Protocol (BEP) consumption.
-//!
-//! Reads the binary BEP file bazel writes with
-//! `--build_event_binary_file=<path>` (`wait_for_upload_complete` gives a
-//! clean EOF when the process exits) and produces a [`BepOutput`] mirroring
-//! hirschgarten's `BepServer`/`BepOutputBuilder` behavior: named-set registry,
-//! per-target output groups, configurations, build status, test summaries.
+//! BEP (`--build_event_binary_file`) reader: parses framed BuildEvents into a queryable BepOutput (named sets, per-target output groups, configurations, build status, test summaries).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -82,7 +76,6 @@ pub struct TestResultDetail {
     pub log: Option<BepFile>,
 }
 
-/// Aggregated BEP output of one bazel invocation.
 #[derive(Debug, Clone, Default)]
 pub struct BepOutput {
     pub named_sets: BTreeMap<String, NamedSet>,
@@ -106,13 +99,22 @@ impl BepOutput {
         self.resolve_many([id])
     }
 
-    /// Resolve several named sets in one pass with memoization.
-    pub fn resolve_many(&self, ids: impl IntoIterator<Item = impl AsRef<str>>) -> BTreeSet<BepFile> {
-        fn walk(out: &BepOutput, id: &str, seen: &mut BTreeSet<String>, files: &mut BTreeSet<BepFile>) {
+    pub fn resolve_many(
+        &self,
+        ids: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> BTreeSet<BepFile> {
+        fn walk(
+            out: &BepOutput,
+            id: &str,
+            seen: &mut BTreeSet<String>,
+            files: &mut BTreeSet<BepFile>,
+        ) {
             if !seen.insert(id.to_string()) {
                 return;
             }
-            let Some(set) = out.named_sets.get(id) else { return };
+            let Some(set) = out.named_sets.get(id) else {
+                return;
+            };
             files.extend(set.files.iter().cloned());
             for child in &set.file_sets {
                 walk(out, child, seen, files);
@@ -126,10 +128,13 @@ impl BepOutput {
         files
     }
 
-    /// Files of one target's output group, recursively resolved.
     pub fn files_for_target_group(&self, target: &TargetKey, group: &str) -> BTreeSet<BepFile> {
-        let Some(groups) = self.target_outputs.get(target) else { return Default::default() };
-        let Some(sets) = groups.get(group) else { return Default::default() };
+        let Some(groups) = self.target_outputs.get(target) else {
+            return Default::default();
+        };
+        let Some(sets) = groups.get(group) else {
+            return Default::default();
+        };
         self.resolve_many(sets.iter().map(|s| s.as_str()))
     }
 }
@@ -158,8 +163,7 @@ fn handle(out: &mut BepOutput, event: build_event_stream::BuildEvent) -> Result<
             out.build_tool_version = Some(started.build_tool_version);
         }
         Some(P::NamedSetOfFiles(ns)) => {
-            let Some(IdKind::NamedSet(build_event_id::NamedSetOfFilesId { id })) = id_kind
-            else {
+            let Some(IdKind::NamedSet(build_event_id::NamedSetOfFilesId { id })) = id_kind else {
                 return Ok(());
             };
             let set = NamedSet {
@@ -282,7 +286,6 @@ fn format_test_status(status: i32) -> String {
         .unwrap_or_else(|| format!("UNKNOWN({status})"))
 }
 
-/// Strip ANSI escape sequences (bazel adds color even in BEP stderr text).
 fn strip_ansi(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut in_escape = false;
@@ -320,9 +323,9 @@ mod tests {
 
         let ns1_event = bes::BuildEvent {
             id: Some(bes::BuildEventId {
-                id: Some(build_event_id::Id::NamedSet(build_event_id::NamedSetOfFilesId {
-                    id: "set1".into(),
-                })),
+                id: Some(build_event_id::Id::NamedSet(
+                    build_event_id::NamedSetOfFilesId { id: "set1".into() },
+                )),
             }),
             payload: Some(build_event::Payload::NamedSetOfFiles(
                 bes::NamedSetOfFiles {
@@ -338,58 +341,66 @@ mod tests {
 
         let ns2_event = bes::BuildEvent {
             id: Some(bes::BuildEventId {
-                id: Some(build_event_id::Id::NamedSet(build_event_id::NamedSetOfFilesId {
-                    id: "set2".into(),
-                })),
+                id: Some(build_event_id::Id::NamedSet(
+                    build_event_id::NamedSetOfFilesId { id: "set2".into() },
+                )),
             }),
-            payload: Some(build_event::Payload::NamedSetOfFiles(bes::NamedSetOfFiles {
-                file_sets: vec![build_event_id::NamedSetOfFilesId {
-                    id: "set1".into(),
-                }],
-                ..Default::default()
-            })),
-            ..Default::default()
-        };
-
-        let tc_event = bes::BuildEvent {
-            id: Some(bes::BuildEventId {
-                id: Some(build_event_id::Id::TargetCompleted(build_event_id::TargetCompletedId {
-                    label: "//a:b".into(),
-                    configuration: Some(build_event_id::ConfigurationId { id: "cfg1".into() }),
-                    aspect: String::new(),
-                })),
-            }),
-            payload: Some(build_event::Payload::Completed(
-                bes::TargetComplete {
-                    output_group: vec![bes::OutputGroup {
-                        name: OUTPUT_GROUP_INFO.into(),
-                        file_sets: vec![build_event_id::NamedSetOfFilesId {
-                            id: "set2".into(),
-                        }],
-                        ..Default::default()
-                    }],
+            payload: Some(build_event::Payload::NamedSetOfFiles(
+                bes::NamedSetOfFiles {
+                    file_sets: vec![build_event_id::NamedSetOfFilesId { id: "set1".into() }],
                     ..Default::default()
                 },
             )),
             ..Default::default()
         };
 
+        let tc_event = bes::BuildEvent {
+            id: Some(bes::BuildEventId {
+                id: Some(build_event_id::Id::TargetCompleted(
+                    build_event_id::TargetCompletedId {
+                        label: "//a:b".into(),
+                        configuration: Some(build_event_id::ConfigurationId { id: "cfg1".into() }),
+                        aspect: String::new(),
+                    },
+                )),
+            }),
+            payload: Some(build_event::Payload::Completed(bes::TargetComplete {
+                output_group: vec![bes::OutputGroup {
+                    name: OUTPUT_GROUP_INFO.into(),
+                    file_sets: vec![build_event_id::NamedSetOfFilesId { id: "set2".into() }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
         let output = parse(&framed(&[ns1_event, ns2_event, tc_event])).unwrap();
-        let key = TargetKey { label: "//a:b".into(), configuration: "cfg1".into() };
+        let key = TargetKey {
+            label: "//a:b".into(),
+            configuration: "cfg1".into(),
+        };
         let files = output.files_for_target_group(&key, OUTPUT_GROUP_INFO);
         assert_eq!(
             files,
-            [BepFile { path_prefix: vec![], name: "foo.intellij-info.txt".into() }]
-                .into_iter()
-                .collect()
+            [BepFile {
+                path_prefix: vec![],
+                name: "foo.intellij-info.txt".into()
+            }]
+            .into_iter()
+            .collect()
         );
     }
 
     #[test]
     fn started_and_finished() {
-        use bes::{build_event, build_event_id, BuildStarted, BuildFinished};
+        use bes::{build_event, build_event_id, BuildFinished, BuildStarted};
         let started = bes::BuildEvent {
-            id: Some(bes::BuildEventId { id: Some(build_event_id::Id::Started(build_event_id::BuildStartedId {})) }),
+            id: Some(bes::BuildEventId {
+                id: Some(build_event_id::Id::Started(
+                    build_event_id::BuildStartedId {},
+                )),
+            }),
             payload: Some(build_event::Payload::Started(BuildStarted {
                 build_tool_version: "release 9.2.0".into(),
                 server_pid: 4242,
@@ -398,9 +409,16 @@ mod tests {
             ..Default::default()
         };
         let finished = bes::BuildEvent {
-            id: Some(bes::BuildEventId { id: Some(build_event_id::Id::BuildFinished(build_event_id::BuildFinishedId {})) }),
+            id: Some(bes::BuildEventId {
+                id: Some(build_event_id::Id::BuildFinished(
+                    build_event_id::BuildFinishedId {},
+                )),
+            }),
             payload: Some(build_event::Payload::Finished(BuildFinished {
-                exit_code: Some(bes::build_finished::ExitCode { code: 3, name: String::new() }),
+                exit_code: Some(bes::build_finished::ExitCode {
+                    code: 3,
+                    name: String::new(),
+                }),
                 ..Default::default()
             })),
             ..Default::default()

@@ -1,5 +1,4 @@
-//! Running bazel subprocesses: shared runner with `bazel info` and streaming
-//! helpers (stdout lines / length-delimited protobufs).
+//! Bazel process runner: `bazel info` parsing plus helpers for text stdout and varint-framed `--output=streamed_proto` decoding.
 
 use std::process::Stdio;
 
@@ -198,7 +197,8 @@ async fn read_length_delimited<M: Message + Default>(
             .read_exact(&mut msg_buf)
             .await
             .map_err(|e| BazelError::Decode(format!("truncated proto: {e}")))?;
-        let decoded = M::decode(msg_buf.as_slice()).map_err(|e| BazelError::Decode(e.to_string()))?;
+        let decoded =
+            M::decode(msg_buf.as_slice()).map_err(|e| BazelError::Decode(e.to_string()))?;
         protos.push(decoded);
     }
 }
@@ -222,18 +222,24 @@ mod tests {
             let msg = TestMsg { value };
             msg.encode_length_delimited(&mut stream).unwrap();
         }
-        let decoded =
-            read_length_delimited::<TestMsg>(&mut stream.as_slice()).await.unwrap();
+        let decoded = read_length_delimited::<TestMsg>(&mut stream.as_slice())
+            .await
+            .unwrap();
         assert_eq!(
             decoded,
-            [TestMsg { value: 1 }, TestMsg { value: 2 }, TestMsg { value: -5 }]
+            [
+                TestMsg { value: 1 },
+                TestMsg { value: 2 },
+                TestMsg { value: -5 }
+            ]
         );
     }
 
     /// A zero-byte stream decodes to zero messages.
     #[tokio::test]
     async fn empty_stream() {
-        let decoded = read_length_delimited::<TestMsg>(&mut Vec::new().as_slice()).await
+        let decoded = read_length_delimited::<TestMsg>(&mut Vec::new().as_slice())
+            .await
             .unwrap();
         assert!(decoded.is_empty());
     }
