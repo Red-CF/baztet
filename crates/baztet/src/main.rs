@@ -73,6 +73,8 @@ enum Command {
         passthrough: Vec<String>,
     },
     /// Run `bazel test` with BEP-based results and junit XML case reports.
+    /// The live dashboard runs whenever stdout is a terminal (`--raw`
+    /// disables it).
     #[command(after_help = "Anything after `--` is passed through to bazel.")]
     Test {
         /// labels; defaults to every *_test target in the snapshot
@@ -89,9 +91,6 @@ enum Command {
         /// print a machine-readable report to stdout
         #[arg(long)]
         json: bool,
-        /// live per-target dashboard over the running tests (alt screen)
-        #[arg(long)]
-        tui: bool,
         #[arg(last = true)]
         passthrough: Vec<String>,
     },
@@ -193,7 +192,6 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<ExitCode> {
             pattern,
             cases,
             json,
-            tui,
             passthrough,
         } => {
             commands::test_cmd(
@@ -203,7 +201,6 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<ExitCode> {
                 pattern,
                 *cases,
                 *json,
-                *tui,
                 passthrough.clone(),
             )
             .await

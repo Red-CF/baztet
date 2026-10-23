@@ -97,6 +97,8 @@ pub async fn build_cmd(
 
 // the mirror of clap's Test flags; grouping them would just restate them
 #[allow(clippy::too_many_arguments)]
+// the mirror of clap's Test flags; grouping them would just restate them
+#[allow(clippy::too_many_arguments)]
 pub async fn test_cmd(
     cli: &Cli,
     labels: &[String],
@@ -104,27 +106,23 @@ pub async fn test_cmd(
     pattern: &Option<String>,
     cases: bool,
     json: bool,
-    tui_on: bool,
     passthrough: Vec<String>,
 ) -> anyhow::Result<ExitCode> {
     let ctx = Ctx::exec(cli, false, true).await?;
     let labels = test_labels(ctx.snapshot()?, labels, pattern)?;
     let mut test_spec = spec(labels.clone(), passthrough);
     test_spec.test_filter = filter.clone();
-    let result = match (tui_on, std::io::stdout().is_terminal()) {
-        (true, true) => {
+    // the live dashboard is the only way `test` runs on a terminal; --raw
+    // and non-tty callers (pipes, CI) get the quiet/raw capture instead
+    let result = match (std::io::stdout().is_terminal(), cli.raw) {
+        (true, false) => {
             let child = ctx
                 .runner
                 .exec_test_fork(ctx.pv(), &test_spec, true)
                 .await?;
             tui::run_test(child, labels).await?
         }
-        // --tui without a tty (pipe, CI): fall back to the quiet capture
-        (true, false) => {
-            eprintln!("[baztet] --tui needs a terminal; running quietly");
-            ctx.runner.exec_test(ctx.pv(), &test_spec).await?
-        }
-        (false, _) => ctx.runner.exec_test(ctx.pv(), &test_spec).await?,
+        _ => ctx.runner.exec_test(ctx.pv(), &test_spec).await?,
     };
     ui::present_exec("test", &result, false);
 

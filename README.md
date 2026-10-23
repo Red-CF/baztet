@@ -120,9 +120,9 @@ Then your daily flows:
 baztet build [labels]                  # bazel build with your project view flags
 baztet test [labels]                   # BEP-driven results, junit case reports
 baztet test --pattern unit             # select tests by label substring
+baztet test                            # live dashboard on a terminal; q cancels bazel
 baztet test --cases                    # per-case results for failures/errors
 baztet test --json                     # machine-readable report (targets + cases)
-baztet test --tui                      # live per-target dashboard; q cancels bazel
 baztet run LABEL                       # streamed output
 baztet coverage [labels]               # merged lcov report paths
 baztet recipes                         # your .bazel/*.xml run configs, imported
@@ -136,11 +136,13 @@ language.
 
 ## Output: quiet by default
 
-`build`/`test`/`coverage` capture bazel's console output and show signal
-instead of noise: a Bastet spinner while bazel works, every warning line
-after it finishes, and the raw error output only when something fails. A
-green build is one line. `--raw` restores full streaming; `run` stays
-interactive by definition.
+On a terminal, `baztet test` runs the live dashboard (per-target table, q
+cancels). `build`/`test`/`coverage` without a dashboard capture bazel's
+console output and show signal instead of noise: a Bastet spinner while
+bazel works, every warning line after it finishes, and the raw error
+output only when something fails. A green build is one line. `--raw`
+restores full streaming (and disables the dashboard); pipes and CI get
+the capture automatically; `run` stays interactive by definition.
 
 Exit codes keep their contract: `test` exits 3 when any test target did
 not pass (FLAKY / CANCELLED / TIMEOUT included), 0 otherwise — for CI to
