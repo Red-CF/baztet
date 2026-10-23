@@ -1,17 +1,4 @@
-//! Parser and model for the `.bazelproject` project view format.
-//!
-//! Ported from hirschgarten's project view (`intellij.bazel.commons/.../projectview`
-//! model + `intellij.bazel.projectview` PSI grammar):
-//!
-//! - A section header is `key:` on its own line; section entries are indented
-//!   lines below it (tabs or spaces).
-//! - Scalar sections may hold their value on the header line (`key: value`).
-//! - List entries use `-` as the marker for an exclude.
-//! - `import <path>` merges another project view (workspace-root-relative,
-//!   may start with `/`); a missing file is an error. `try_import <path>`
-//!   skips a missing file.
-//! - `#` starts a comment.
-//! - List sections may be repeated/merged; scalar sections: last wins.
+//! `.bazelproject` project view parser and model (hirschgarten format; imports, excludes, flag sections).
 
 use camino::Utf8PathBuf;
 use std::fmt;
@@ -38,8 +25,7 @@ pub enum ProjectViewError {
     Io(#[from] std::io::Error),
 }
 
-/// Known section keys and their kind. Anything else is an error (the IDE
-/// plugin accepts more for its UI features; baztet only needs these).
+/// Known section keys and kinds; unknown keys are errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SectionKind {
     /// list of bazel target labels; `-` marks an exclusion
@@ -73,10 +59,7 @@ fn section_kind(key: &str) -> Option<SectionKind> {
     })
 }
 
-/// Parsed project view (own sections + resolved imports).
-///
-/// Scalar sections are `Option`s so that an imported value can survive when
-/// the importing file does not set its own.
+/// Parsed project view; scalar sections are Options (imports survive).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectView {
     /// target labels to sync (include + exclude entries)
@@ -134,8 +117,7 @@ impl ProjectView {
     }
 }
 
-/// Merge `other` on top of `self` (import semantics: `other` is the importing
-/// file's own view, `self` the imported base; own values win).
+/// Import merge: `other` (the importing file) wins over `self` (base).
 impl ProjectView {
     fn merge(&mut self, other: ProjectView) {
         self.targets.merge(other.targets);
@@ -145,15 +127,22 @@ impl ProjectView {
                 *own = other;
             }
         }
-        take(&mut self.derive_targets_from_directories, other.derive_targets_from_directories);
-        take(&mut self.allow_manual_targets_sync, other.allow_manual_targets_sync);
+        take(
+            &mut self.derive_targets_from_directories,
+            other.derive_targets_from_directories,
+        );
+        take(
+            &mut self.allow_manual_targets_sync,
+            other.allow_manual_targets_sync,
+        );
         take(&mut self.shard_sync, other.shard_sync);
         self.build_flags.extend(other.build_flags);
         self.test_flags.extend(other.test_flags);
         self.sync_flags.extend(other.sync_flags);
         self.debug_flags.extend(other.debug_flags);
         self.test_sources.extend(other.test_sources);
-        self.import_run_configurations.extend(other.import_run_configurations);
+        self.import_run_configurations
+            .extend(other.import_run_configurations);
         take(&mut self.workspace_type, other.workspace_type);
         take(&mut self.java_language_level, other.java_language_level);
         take(&mut self.bazel_binary, other.bazel_binary);
@@ -177,7 +166,6 @@ impl TargetsSection {
     }
 }
 
-/// A directory entry from the `directories` section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryEntry {
     /// directory path relative to the workspace root
@@ -242,8 +230,7 @@ fn apply_raw_and_imports(
     parse_with_depth(path, workspace_root, remaining_depth)
 }
 
-/// Parse project view text directly (no file on disk). Imports whose file is
-/// absent error like a required import would.
+/// Parse text directly (imports resolve against an empty root).
 pub fn parse_text(text: &str) -> Result<ProjectView, ProjectViewError> {
     let raw = Raw::parse(text)?;
     let mut result = ProjectView::default();
@@ -305,7 +292,13 @@ struct ImportDirective {
 
 impl std::fmt::Debug for ImportDirective {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{} ({})", self.path, self.line, if self.optional { "try" } else { "required" })
+        write!(
+            f,
+            "{}:{} ({})",
+            self.path,
+            self.line,
+            if self.optional { "try" } else { "required" }
+        )
     }
 }
 
@@ -382,7 +375,9 @@ impl Raw {
                 }
                 match section_kind(key) {
                     None => {
-                        return Err(ProjectViewError::UnknownSection { key: key.to_string() });
+                        return Err(ProjectViewError::UnknownSection {
+                            key: key.to_string(),
+                        });
                     }
                     Some(SectionKind::Targets)
                     | Some(SectionKind::Directories)
@@ -392,13 +387,17 @@ impl Raw {
                         // allow the first entry inline: `targets: //foo`
                         let inline = strip_scalar(value);
                         if !inline.is_empty() {
-                            raw.list_entries.push((key.to_string(), vec![inline.to_string()]));
+                            raw.list_entries
+                                .push((key.to_string(), vec![inline.to_string()]));
                         }
                     }
                     Some(_) => {
                         current_list = None;
-                        raw.scalars
-                            .push((key.to_string(), strip_scalar(value).to_string(), line_no));
+                        raw.scalars.push((
+                            key.to_string(),
+                            strip_scalar(value).to_string(),
+                            line_no,
+                        ));
                     }
                 }
             } else {
@@ -422,7 +421,11 @@ fn strip_comment(line: &str) -> &str {
     }
 }
 
-fn apply_list(result: &mut ProjectView, key: &str, entries: &[String]) -> Result<(), ProjectViewError> {
+fn apply_list(
+    result: &mut ProjectView,
+    key: &str,
+    entries: &[String],
+) -> Result<(), ProjectViewError> {
     match key {
         "targets" => {
             for entry in entries {
@@ -448,9 +451,9 @@ fn apply_list(result: &mut ProjectView, key: &str, entries: &[String]) -> Result
         "sync_flags" => result.sync_flags.extend(entries.iter().cloned()),
         "debug_flags" => result.debug_flags.extend(entries.iter().cloned()),
         "test_sources" => result.test_sources.extend(entries.iter().cloned()),
-        "import_run_configurations" => {
-            result.import_run_configurations.extend(entries.iter().cloned())
-        }
+        "import_run_configurations" => result
+            .import_run_configurations
+            .extend(entries.iter().cloned()),
         _ => unreachable!("validated earlier"),
     }
     Ok(())
@@ -472,18 +475,19 @@ fn apply_scalar(
         "shard_sync" => result.shard_sync = Some(parse_bool(key, value, line)?),
         "bazel_binary" => result.bazel_binary = Some(value.to_string()),
         "import_depth" => {
-            result.import_depth = Some(
-                value
-                    .parse()
-                    .map_err(|_| ProjectViewError::BadValue { key: key.to_string(), expected: "an integer", value: value.to_string() })?,
-            )
+            result.import_depth = Some(value.parse().map_err(|_| ProjectViewError::BadValue {
+                key: key.to_string(),
+                expected: "an integer",
+                value: value.to_string(),
+            })?)
         }
         "target_shard_size" => {
-            result.target_shard_size = Some(
-                value
-                    .parse()
-                    .map_err(|_| ProjectViewError::BadValue { key: key.to_string(), expected: "an integer", value: value.to_string() })?,
-            )
+            result.target_shard_size =
+                Some(value.parse().map_err(|_| ProjectViewError::BadValue {
+                    key: key.to_string(),
+                    expected: "an integer",
+                    value: value.to_string(),
+                })?)
         }
         // carried, no CLI behavior yet
         "workspace_type" => result.workspace_type = Some(value.to_string()),
@@ -570,7 +574,9 @@ directories:
 
     #[test]
     fn comments_and_inline_entries() {
-        let raw = Raw::parse("targets: //inline:target\n# comment\nbuild_flags:\n    --a # trailing\n").unwrap();
+        let raw =
+            Raw::parse("targets: //inline:target\n# comment\nbuild_flags:\n    --a # trailing\n")
+                .unwrap();
         assert_eq!(raw.list_entries.len(), 2);
         assert_eq!(raw.list_entries[0].1, ["//inline:target"]);
         assert_eq!(raw.list_entries[1].1, ["--a"]);
@@ -604,25 +610,41 @@ directories:
     fn import_chain_files() {
         use std::fs;
         let tmp = std::env::temp_dir().join("baztet-pv-import-test");
-        let ws = camino::Utf8PathBuf::try_from(tmp.clone()).unwrap().join("ws");
+        let ws = camino::Utf8PathBuf::try_from(tmp.clone())
+            .unwrap()
+            .join("ws");
         let _ = fs::remove_dir_all(&ws);
         fs::create_dir_all(&ws).unwrap();
-        fs::write(ws.join("base.bazelproject"), "import_depth: 5\nbuild_flags:\n    --base\n")
-            .unwrap();
-        fs::write(ws.join("own.bazelproject"), "import /base.bazelproject\nbuild_flags:\n    --own\n")
-            .unwrap();
+        fs::write(
+            ws.join("base.bazelproject"),
+            "import_depth: 5\nbuild_flags:\n    --base\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("own.bazelproject"),
+            "import /base.bazelproject\nbuild_flags:\n    --own\n",
+        )
+        .unwrap();
 
         let view = parse(&ws.join("own.bazelproject"), &ws).unwrap();
         assert_eq!(view.import_depth(), 5); // imported value survives
         assert_eq!(view.build_flags, ["--base", "--own"]); // own flags land after
 
         // missing required import errors; missing try_import is skipped
-        fs::write(ws.join("bad.bazelproject"), "import /missing.bazelproject\ntargets:\n    //a:b\n").unwrap();
+        fs::write(
+            ws.join("bad.bazelproject"),
+            "import /missing.bazelproject\ntargets:\n    //a:b\n",
+        )
+        .unwrap();
         assert!(matches!(
             parse(&ws.join("bad.bazelproject"), &ws),
             Err(ProjectViewError::ImportFailure { .. })
         ));
-        fs::write(ws.join("ok.bazelproject"), "try_import /missing.bazelproject\ntargets:\n    //a:b\n").unwrap();
+        fs::write(
+            ws.join("ok.bazelproject"),
+            "try_import /missing.bazelproject\ntargets:\n    //a:b\n",
+        )
+        .unwrap();
         assert!(parse(&ws.join("ok.bazelproject"), &ws).is_ok());
         let _ = fs::remove_dir_all(&ws);
     }

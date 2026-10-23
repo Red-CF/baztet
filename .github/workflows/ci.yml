@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# superseded runs on the same ref (force-push, rebase) are wasteful: cancel
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # dependency CVE gate: Cargo.lock against the RustSec advisory DB.
   # deny-warnings=false so unmaintained-dep notices don't turn CI red;
@@ -25,15 +30,17 @@ jobs:
           deny-warnings: false
 
   # lint gate: zero warnings allowed (the codebase holds it today; this
-  # keeps it from rotting)
+  # keeps it from rotting) + rustfmt as part of the same gate
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo fmt --all --check
 
   coverage:
     # coverage lives on its own named check: instrumented tests on Linux +
@@ -45,6 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: |
           rustup component add llvm-tools-preview
           cargo install cargo-llvm-cov
@@ -76,7 +84,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+
+  # end-to-end against real Bazel: the unit suite cannot catch proto/aspect
+  # regressions. bazelisk resolves the pinned bazel version per workspace.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install bazelisk as bazel
+        run: |
+          V=$(curl -sfL https://api.github.com/repos/bazelbuild/bazelisk/releases/latest | jq -r .tag_name)
+          curl -fsL "https://github.com/bazelbuild/bazelisk/releases/download/${V}/bazelisk-linux-amd64" -o /tmp/bazelisk
+          chmod +x /tmp/bazelisk && sudo install /tmp/bazelisk /usr/local/bin/bazel
+      - run: cargo test -p baztet --test integration -- --ignored
 
   build:
     # release build is what users install — must stay clean on all OSes;
@@ -153,7 +177,7 @@ jobs:
     # crates.io: merges without a version bump (infra PRs, accumulated WIP
     # before a deliberate release) leave everything untouched and the job
     # exits green without publishing anything
-    needs: [test, build, coverage, lint, audit]
+    needs: [test, build, coverage, lint, audit, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

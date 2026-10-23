@@ -1,6 +1,4 @@
-//! baztet project snapshot: target graph + persistence.
-//!
-//! Version 3 = v2 + sync fingerprint + aspect-output reuse metadata.
+//! Project snapshot (schema v3): target graph + ide summaries + reuse metadata; bincode+zstd at the platform cache dir.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -9,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const SNAPSHOT_SCHEMA: u16 = 3;
-/// on-disk location, relative to the workspace root
-pub const SNAPSHOT_PATH: &str = ".baztet/snapshot.bin";
 
 #[derive(Debug, Error)]
 pub enum SnapshotError {
@@ -22,7 +18,6 @@ pub enum SnapshotError {
     Io(#[from] std::io::Error),
 }
 
-/// A synced project: targets + edges.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema: u16,
@@ -45,6 +40,19 @@ pub struct Snapshot {
     /// BUILD changes without re-querying
     #[serde(default)]
     pub build_files_mtime: Option<u64>,
+    /// per-package BUILD mtimes (unix secs) at last sync, when directories
+    /// derive targets; delta aspect builds diff against this
+    #[serde(default)]
+    pub build_pkg_mtimes: Option<BTreeMap<String, u64>>,
+    /// raw `bazel info` text from the last sync; exec commands reuse it to
+    /// skip the info spawn (stale after a workspace/config change, the next
+    /// sync refreshes it)
+    #[serde(default)]
+    pub bazel_info_text: Option<String>,
+    /// bazel binary that produced `bazel_info_text`; the cached text is
+    /// only reused when the requested binary matches
+    #[serde(default)]
+    pub bazel_binary: Option<String>,
     /// workspace configurations seen in BEP, keyed by configuration id
     #[serde(default)]
     pub configurations: BTreeMap<String, ConfigurationLite>,
@@ -53,7 +61,6 @@ pub struct Snapshot {
     pub has_error: bool,
 }
 
-/// Compact target graph: labels interned into `Vec<TargetNode>`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TargetGraph {
     targets: Vec<TargetNode>,
@@ -247,9 +254,9 @@ impl Snapshot {
         Ok(snapshot)
     }
 
-    /// Write to `<workspace_root>/<SNAPSHOT_PATH>`, creating dirs.
+    /// Write under the platform cache dir (outside the repo).
     pub fn save(&self) -> Result<Utf8PathBuf, SnapshotError> {
-        let path = self.workspace_root.join(SNAPSHOT_PATH);
+        let path = snapshot_path(&self.workspace_root)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -262,7 +269,7 @@ impl Snapshot {
     }
 
     pub fn load(workspace_root: &Utf8PathBuf) -> Result<Snapshot, SnapshotError> {
-        let bytes = std::fs::read(workspace_root.join(SNAPSHOT_PATH))?;
+        let bytes = std::fs::read(snapshot_path(workspace_root)?)?;
         Snapshot::from_bytes(&bytes)
     }
 
@@ -278,6 +285,67 @@ impl Snapshot {
     }
 }
 
+/// Snapshot file location: `$BAZTET_CACHE_DIR/<root-hash>/snapshot.bin`, or
+/// the per-OS cache dir when unset. Hash key = the canonicalized workspace
+/// root path (canonicalization keeps `.`, `..`, and symlinked roots in one
+/// snapshot; a non-existent root falls back to the literal path).
+pub fn snapshot_path(workspace_root: &Utf8PathBuf) -> Result<Utf8PathBuf, SnapshotError> {
+    use sha2::Digest;
+
+    let base = match std::env::var("BAZTET_CACHE_DIR") {
+        Ok(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
+        _ => match std::env::var("XDG_CACHE_HOME") {
+            Ok(dir) if !dir.is_empty() => std::path::PathBuf::from(dir).join("baztet"),
+            _ => {
+                let home =
+                    home_dir()?.ok_or(SnapshotError::Corrupt("cannot resolve home dir".into()))?;
+                cache_dir_under(home)
+            }
+        },
+    };
+    let canonical = std::fs::canonicalize(workspace_root.as_std_path())
+        .unwrap_or_else(|_| workspace_root.as_std_path().to_path_buf());
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let hash = hex(&hasher.finalize());
+    Utf8PathBuf::try_from(base.join(&hash[..16]).join("snapshot.bin"))
+        .map_err(|e| SnapshotError::Corrupt(e.to_string()))
+}
+
+fn cache_dir_under(home: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Caches/baztet")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // %LOCALAPPDATA% when set; else keep the per-home default location
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData/Local"))
+            .join("baztet")
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        home.join(".cache/baztet")
+    }
+}
+
+fn home_dir() -> Result<Option<std::path::PathBuf>, SnapshotError> {
+    // HOME everywhere; USERPROFILE is the Windows spelling
+    Ok(std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,8 +353,15 @@ mod tests {
     fn sample() -> Snapshot {
         let mut s = Snapshot::new("/ws".into());
         s.bazel_version = Some("9.3.0".into());
-        let a = s.graph.get_or_insert("//a:lib", "java_library", Some("//a/BUILD:10".into()), vec!["a/Foo.java".into()]);
-        let b = s.graph.get_or_insert("//b:lib", "java_library", None, vec![]);
+        let a = s.graph.get_or_insert(
+            "//a:lib",
+            "java_library",
+            Some("//a/BUILD:10".into()),
+            vec!["a/Foo.java".into()],
+        );
+        let b = s
+            .graph
+            .get_or_insert("//b:lib", "java_library", None, vec![]);
         s.graph.add_dep(b, a);
         s.graph.add_unlinked_dep(b, "@maven//:dep");
         s.specified_targets = vec!["//a/...".into()];
@@ -304,9 +379,15 @@ mod tests {
     #[test]
     fn graph_queries() {
         let mut s = Snapshot::default();
-        let a = s.graph.get_or_insert("//a:lib", "java_library", None, vec![]);
-        let b = s.graph.get_or_insert("//b:lib", "java_library", None, vec![]);
-        let c = s.graph.get_or_insert("//c:bin", "java_binary", None, vec![]);
+        let a = s
+            .graph
+            .get_or_insert("//a:lib", "java_library", None, vec![]);
+        let b = s
+            .graph
+            .get_or_insert("//b:lib", "java_library", None, vec![]);
+        let c = s
+            .graph
+            .get_or_insert("//c:bin", "java_binary", None, vec![]);
         s.graph.add_dep(c, b);
         s.graph.add_dep(b, a);
         let b_node = s.graph.get_by_label("//b:lib").unwrap();
@@ -322,7 +403,10 @@ mod tests {
         s.schema = 2;
         let bytes = s.to_bytes().unwrap();
         match Snapshot::from_bytes(&bytes) {
-            Err(SnapshotError::Version { found: 2, expected: 3 }) => {}
+            Err(SnapshotError::Version {
+                found: 2,
+                expected: 3,
+            }) => {}
             other => panic!("expected clean Version error, got {other:?}"),
         }
     }

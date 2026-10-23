@@ -1,10 +1,4 @@
-//! Execution pipeline: `baztet build/test/run/coverage`, mirroring
-//! hirschgarten's `ExecuteService`:
-//!
-//! - flag sections from the project view (build_flags / test_flags)
-//! - `--tool_tag`, `--build_tag_filters=-no-ide`, tty-dependent colors
-//! - BEP sidecar file for structured results even with live console output
-//! - `--test_filter` passthrough, junit XML parsing from BEP test outputs
+//! Execution: build/test/run/coverage with ExecuteService-contract flag construction, BEP sidecars beside live console output, and junit test.xml parsing.
 
 use std::collections::BTreeMap;
 use std::process::Stdio;
@@ -68,7 +62,11 @@ fn bep_flags(bep_file: &std::path::Path, argv: &mut Vec<String>) {
 
 impl BazelRunner {
     /// `bazel build` on the given labels with the project view's build flags.
-    pub async fn exec_build(&self, pv: &ProjectView, spec: &ExecSpec) -> Result<ExecResult, ExecError> {
+    pub async fn exec_build(
+        &self,
+        pv: &ProjectView,
+        spec: &ExecSpec,
+    ) -> Result<ExecResult, ExecError> {
         self.exec_with_bep("build", pv, spec, |argv| {
             argv.extend(pv.build_flags.iter().cloned());
             Ok(())
@@ -76,8 +74,11 @@ impl BazelRunner {
         .await
     }
 
-    /// `bazel run` on one label; output is the target's (inherited stdio).
-    pub async fn exec_run(&self, pv: &ProjectView, spec: &ExecSpec) -> Result<ExecResult, ExecError> {
+    pub async fn exec_run(
+        &self,
+        pv: &ProjectView,
+        spec: &ExecSpec,
+    ) -> Result<ExecResult, ExecError> {
         if spec.labels.len() != 1 {
             return Err(BazelError::Other("`run` takes exactly one target".into()).into());
         }
@@ -85,8 +86,7 @@ impl BazelRunner {
         common_flags(&mut argv);
         argv.extend(pv.build_flags.iter().cloned());
         let bep_file = temp_bep_file();
-        // BEP flags must come BEFORE the target label: everything after the
-        // first positional is passed to the executed binary
+        // BEP flags BEFORE the label: postpositional args go to the binary
         bep_flags(&bep_file, &mut argv);
         argv.extend(spec.labels.iter().cloned());
         argv.extend(spec.extra_args.iter().cloned());
@@ -100,14 +100,24 @@ impl BazelRunner {
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
         cmd.envs(&spec.env);
+        if !self.tuning_flags.is_empty() {
+            cmd.args(&self.tuning_flags);
+        }
         let mut child = cmd.spawn()?;
         let status = child.wait().await?;
         let bep = read_bep_or_none(&bep_file)?;
-        Ok(ExecResult { code: status.code().unwrap_or(-1), bep: Some(bep) })
+        Ok(ExecResult {
+            code: status.code().unwrap_or(-1),
+            bep: Some(bep),
+        })
     }
 
     /// `bazel test` with BEP capture and junit XML parsing.
-    pub async fn exec_test(&self, pv: &ProjectView, spec: &ExecSpec) -> Result<ExecResult, ExecError> {
+    pub async fn exec_test(
+        &self,
+        pv: &ProjectView,
+        spec: &ExecSpec,
+    ) -> Result<ExecResult, ExecError> {
         self.exec_with_bep("test", pv, spec, |argv| {
             argv.extend(pv.test_flags.iter().cloned());
             if let Some(filter) = &spec.test_filter {
@@ -120,7 +130,11 @@ impl BazelRunner {
     }
 
     /// `bazel coverage` producing lcov reports referenced by BEP.
-    pub async fn exec_coverage(&self, pv: &ProjectView, spec: &ExecSpec) -> Result<ExecResult, ExecError> {
+    pub async fn exec_coverage(
+        &self,
+        pv: &ProjectView,
+        spec: &ExecSpec,
+    ) -> Result<ExecResult, ExecError> {
         self.exec_with_bep("coverage", pv, spec, |argv| {
             argv.extend(pv.build_flags.iter().cloned());
             argv.push("--combined_report=lcov".to_string());
@@ -129,8 +143,6 @@ impl BazelRunner {
         .await
     }
 
-    /// Shared path: build argv, run with inherited console + BEP sidecar,
-    /// parse the sidecar after exit.
     async fn exec_with_bep(
         &self,
         command: &str,
@@ -144,7 +156,6 @@ impl BazelRunner {
         let bep_file = temp_bep_file();
         let mut argv: Vec<String> = vec![];
         common_flags(&mut argv);
-        // `test` output groups don't exist; skip build_tag_filters for coverage
         if command == "coverage" {
             argv.retain(|a| a != BUILD_TAG_FILTERS);
         }
@@ -162,17 +173,26 @@ impl BazelRunner {
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
         cmd.envs(&spec.env);
+        if !self.tuning_flags.is_empty() {
+            cmd.args(&self.tuning_flags);
+        }
         let status = cmd.spawn()?.wait().await?;
 
         let bep = read_bep_or_none(&bep_file)?;
         let code = status.code().unwrap_or(-1);
-        Ok(ExecResult { code, bep: Some(bep) })
+        Ok(ExecResult {
+            code,
+            bep: Some(bep),
+        })
     }
 }
 
 fn temp_bep_file() -> std::path::PathBuf {
-    std::env::temp_dir()
-        .join(format!("baztet-bep-{}-{}.bin", std::process::id(), chrono_id()))
+    std::env::temp_dir().join(format!(
+        "baztet-bep-{}-{}.bin",
+        std::process::id(),
+        chrono_id()
+    ))
 }
 
 fn chrono_id() -> u128 {
@@ -194,7 +214,6 @@ fn read_bep_or_none(path: &std::path::Path) -> Result<BepOutput, ExecError> {
     }
 }
 
-/// One test case from a junit `test.xml`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TestCase {
     pub class_name: String,
@@ -213,8 +232,7 @@ pub enum TestCaseStatus {
     Error,
 }
 
-/// Parse a junit-produced `test.xml` (as written by bazel's
-/// `--test_output` XML file) into cases.
+/// Parse a junit `test.xml` into cases.
 pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
     let text = String::from_utf8_lossy(bytes);
     let mut reader = quick_xml::Reader::from_str(&text);
@@ -232,7 +250,7 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
     use quick_xml::events::Event;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == b"testcase" => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "testcase" => {
                 in_case = true;
                 current = TestCase {
                     class_name: String::new(),
@@ -244,37 +262,73 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 current_failure = None;
                 for attr in e.attributes().flatten() {
                     match attr.key.as_ref() {
-                        b"classname" => current.class_name = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned(),
-                        b"name" => current.name = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned(),
-                        b"time" => current.duration_seconds = attr.normalized_value(XML_VERSION).unwrap_or_default().parse().ok(),
+                        "classname" => {
+                            current.class_name = attr
+                                .normalized_value(XML_VERSION)
+                                .unwrap_or_default()
+                                .into_owned()
+                        }
+                        "name" => {
+                            current.name = attr
+                                .normalized_value(XML_VERSION)
+                                .unwrap_or_default()
+                                .into_owned()
+                        }
+                        "time" => {
+                            current.duration_seconds = attr
+                                .normalized_value(XML_VERSION)
+                                .unwrap_or_default()
+                                .parse()
+                                .ok()
+                        }
                         _ => {}
                     }
                 }
             }
-            Ok(Event::Start(e)) if in_case && (e.name().as_ref() == b"failure" || e.name().as_ref() == b"error") => {
-                current.status = if e.name().as_ref() == b"failure" {
+            Ok(Event::Start(e))
+                if in_case && (e.name().as_ref() == "failure" || e.name().as_ref() == "error") =>
+            {
+                current.status = if e.name().as_ref() == "failure" {
                     TestCaseStatus::Failed
                 } else {
                     TestCaseStatus::Error
                 };
-                if let Some(attr) = e.attributes().flatten().find(|a| a.key.as_ref() == b"message") {
-                    current_failure = Some(attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned());
+                if let Some(attr) = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == "message")
+                {
+                    current_failure = Some(
+                        attr.normalized_value(XML_VERSION)
+                            .unwrap_or_default()
+                            .into_owned(),
+                    );
                 }
             }
-            Ok(Event::Empty(e)) if in_case && (e.name().as_ref() == b"failure" || e.name().as_ref() == b"error") => {
-                current.status = if e.name().as_ref() == b"failure" {
+            Ok(Event::Empty(e))
+                if in_case && (e.name().as_ref() == "failure" || e.name().as_ref() == "error") =>
+            {
+                current.status = if e.name().as_ref() == "failure" {
                     TestCaseStatus::Failed
                 } else {
                     TestCaseStatus::Error
                 };
-                if let Some(attr) = e.attributes().flatten().find(|a| a.key.as_ref() == b"message") {
-                    current_failure = Some(attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned());
+                if let Some(attr) = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == "message")
+                {
+                    current_failure = Some(
+                        attr.normalized_value(XML_VERSION)
+                            .unwrap_or_default()
+                            .into_owned(),
+                    );
                 }
             }
-            Ok(Event::Empty(e)) if in_case && e.name().as_ref() == b"skipped" => {
+            Ok(Event::Empty(e)) if in_case && e.name().as_ref() == "skipped" => {
                 current.status = TestCaseStatus::Skipped;
             }
-            Ok(Event::Empty(e)) if e.name().as_ref() == b"testcase" => {
+            Ok(Event::Empty(e)) if e.name().as_ref() == "testcase" => {
                 // self-closing testcase: passed, attributes only
                 let mut case = TestCase {
                     class_name: String::new(),
@@ -285,22 +339,41 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 };
                 for attr in e.attributes().flatten() {
                     match attr.key.as_ref() {
-                        b"classname" => case.class_name = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned(),
-                        b"name" => case.name = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned(),
-                        b"time" => case.duration_seconds = attr.normalized_value(XML_VERSION).unwrap_or_default().parse().ok(),
+                        "classname" => {
+                            case.class_name = attr
+                                .normalized_value(XML_VERSION)
+                                .unwrap_or_default()
+                                .into_owned()
+                        }
+                        "name" => {
+                            case.name = attr
+                                .normalized_value(XML_VERSION)
+                                .unwrap_or_default()
+                                .into_owned()
+                        }
+                        "time" => {
+                            case.duration_seconds = attr
+                                .normalized_value(XML_VERSION)
+                                .unwrap_or_default()
+                                .parse()
+                                .ok()
+                        }
                         _ => {}
                     }
                 }
                 cases.push(case);
             }
-            Ok(Event::End(e)) if e.name().as_ref() == b"testcase" => {
+            Ok(Event::End(e)) if e.name().as_ref() == "testcase" => {
                 current.message = current_failure.take();
                 cases.push(current.clone());
                 in_case = false;
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                eprintln!("[baztet] junit xml truncated/unparsable near {}: {e}", reader.buffer_position());
+                eprintln!(
+                    "[baztet] junit xml truncated/unparsable near {}: {e}",
+                    reader.buffer_position()
+                );
                 break;
             }
             _ => {}
@@ -309,9 +382,7 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
     cases
 }
 
-/// One IntelliJ Bazel run configuration recipe (`.bazel/*.xml`,
-/// `BlazeCommandRunConfigurationType`): the CLI equivalent of the IDE's
-/// run configurations, imported via the project view.
+/// IntelliJ Bazel run config (`.bazel/*.xml`) as a CLI recipe.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Recipe {
     pub name: String,
@@ -321,7 +392,6 @@ pub struct Recipe {
     pub env: BTreeMap<String, String>,
 }
 
-/// Parse a run-configuration XML; only the Blaze fields are consumed.
 pub fn parse_recipe(xml: &str) -> Option<Recipe> {
     use quick_xml::events::Event;
 
@@ -334,33 +404,44 @@ pub fn parse_recipe(xml: &str) -> Option<Recipe> {
         let ev = reader.read_event().ok()?;
         match ev {
             Event::Start(e) => match e.name().as_ref() {
-                b"configuration" => {
-                    if let Some(attr) = e.attributes().flatten().find(|a| a.key.as_ref() == b"name") {
-                        recipe.name = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned();
+                "configuration" => {
+                    if let Some(attr) = e.attributes().flatten().find(|a| a.key.as_ref() == "name")
+                    {
+                        recipe.name = attr
+                            .normalized_value(XML_VERSION)
+                            .unwrap_or_default()
+                            .into_owned();
                     }
                 }
-                b"blaze-settings" => {
+                "blaze-settings" => {
                     in_blaze = true;
-                    if let Some(attr) = e.attributes().flatten().find(|a| a.key.as_ref() == b"blaze-command") {
-                        recipe.command = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned();
+                    if let Some(attr) = e
+                        .attributes()
+                        .flatten()
+                        .find(|a| a.key.as_ref() == "blaze-command")
+                    {
+                        recipe.command = attr
+                            .normalized_value(XML_VERSION)
+                            .unwrap_or_default()
+                            .into_owned();
                     }
                 }
-                b"env_state" => in_envs = true,
-                b"env" if in_envs => {
+                "env_state" => in_envs = true,
+                "env" if in_envs => {
                     let (name, value) = env_entry(&e);
                     recipe.env.insert(name, value);
                 }
                 _ => {}
             },
             Event::Empty(e) => {
-                if in_envs && e.name().as_ref() == b"env" {
+                if in_envs && e.name().as_ref() == "env" {
                     let (name, value) = env_entry(&e);
                     recipe.env.insert(name, value);
                 }
             }
             Event::Text(t) => {
                 if in_blaze && !in_envs {
-                    let text = t.xml_content(XML_VERSION).unwrap_or_default().to_string();
+                    let text = t.xml_content(XML_VERSION).into_owned();
                     if text.contains("//") {
                         recipe.target = text;
                     }
@@ -381,16 +462,25 @@ fn env_entry(e: &quick_xml::events::BytesStart) -> (String, String) {
     let mut value = String::new();
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
-            b"name" => name = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned(),
-            b"value" => value = attr.normalized_value(XML_VERSION).unwrap_or_default().into_owned(),
+            "name" => {
+                name = attr
+                    .normalized_value(XML_VERSION)
+                    .unwrap_or_default()
+                    .into_owned()
+            }
+            "value" => {
+                value = attr
+                    .normalized_value(XML_VERSION)
+                    .unwrap_or_default()
+                    .into_owned()
+            }
             _ => {}
         }
     }
     (name, value)
 }
 
-/// Resolve test.xml paths from BEP test outputs against the execution root
-/// and parse them into case lists.
+/// junit cases per test label, resolved against the execution root.
 pub fn test_cases_from_bep(
     runner: &BazelRunner,
     bep: &BepOutput,
@@ -425,7 +515,6 @@ fn group_by_label(bep: &BepOutput) -> Vec<(String, Vec<String>)> {
     out.reverse();
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -471,12 +560,18 @@ mod tests {
         assert_eq!(r.name, "api unit tests");
         assert_eq!(r.command, "test");
         assert_eq!(r.target, "//pkg/api:unit");
-        assert_eq!(r.env.get("CONFIG_PATH").map(String::as_str), Some("config.yaml"));
+        assert_eq!(
+            r.env.get("CONFIG_PATH").map(String::as_str),
+            Some("config.yaml")
+        );
     }
 
     #[test]
     fn recipe_rejects_incomplete() {
-        assert!(parse_recipe(r#"<configuration><blaze-settings></blaze-settings></configuration>"#).is_none());
+        assert!(parse_recipe(
+            r#"<configuration><blaze-settings></blaze-settings></configuration>"#
+        )
+        .is_none());
         // target without command
         assert!(parse_recipe(
             r#"<configuration><blaze-settings blaze-command=""><blaze-target>//a:b</blaze-target></blaze-settings></configuration>"#
@@ -494,14 +589,20 @@ mod tests {
                     label: "//a:t".into(),
                     status: "FAILED".into(),
                     cached_locally: false,
-                    xml: Some(BepFile { path_prefix: vec![], name: "a/first/test.xml".into() }),
+                    xml: Some(BepFile {
+                        path_prefix: vec![],
+                        name: "a/first/test.xml".into(),
+                    }),
                     log: None,
                 },
                 TestResultDetail {
                     label: "//a:t".into(),
                     status: "PASSED".into(),
                     cached_locally: false,
-                    xml: Some(BepFile { path_prefix: vec![], name: "a/second/test.xml".into() }),
+                    xml: Some(BepFile {
+                        path_prefix: vec![],
+                        name: "a/second/test.xml".into(),
+                    }),
                     log: None,
                 },
             ],
@@ -509,7 +610,10 @@ mod tests {
         };
         let groups = group_by_label(&bep);
         // only the LAST attempt's xml is reported
-        assert_eq!(groups, [("//a:t".to_string(), vec!["a/second/test.xml".to_string()])]);
+        assert_eq!(
+            groups,
+            [("//a:t".to_string(), vec!["a/second/test.xml".to_string()])]
+        );
     }
 
     #[test]
@@ -519,5 +623,4 @@ mod tests {
         assert_eq!(cases[0].status, TestCaseStatus::Error);
         assert_eq!(cases[0].message.as_deref(), Some("boom"));
     }
-
 }

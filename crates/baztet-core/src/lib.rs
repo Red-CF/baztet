@@ -6,7 +6,10 @@ pub mod bench;
 pub mod exec;
 pub mod expand;
 pub mod ideinfo;
+pub mod query;
+pub mod reuse;
 pub mod sync;
 pub mod workspace;
 
 pub use bazel::{BazelError, BazelRunner};
+pub use reuse::{Reuse, SyncReport};

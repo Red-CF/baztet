@@ -22,16 +22,16 @@ fn runner(args: &[String]) -> Command {
     if let Some(pv) = env_or_none("BAZTET_REAL_PV") {
         cmd.args(["--project-view", &pv]);
     }
-    cmd.args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd
 }
 
 #[test]
 #[ignore = "opt-in: only runs when BAZTET_REAL_WS is set"]
 fn real_workspace_sync_and_query() {
-    let Some(_) = env_or_none("BAZTET_REAL_WS") else { return };
+    let Some(_) = env_or_none("BAZTET_REAL_WS") else {
+        return;
+    };
 
     // full sync (query + aspect); heavy but this is the daily path
     let out = runner(&["sync".into(), "--fresh".into()]).output().unwrap();
@@ -42,11 +42,24 @@ fn real_workspace_sync_and_query() {
     let out = runner(&["targets".into()]).output().unwrap();
     assert!(out.status.success(), "targets failed");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let first = stdout.lines().next().expect("no targets in snapshot").trim().to_string();
+    let first = stdout
+        .lines()
+        .next()
+        .expect("no targets in snapshot")
+        .trim()
+        .to_string();
     assert!(first.contains("//"), "unexpected target line: {first}");
 
     // deps of the smallest target resolve without error (may be empty)
-    let label = stdout.lines().next().unwrap().split(" [").next().unwrap().trim().to_string();
+    let label = stdout
+        .lines()
+        .next()
+        .unwrap()
+        .split(" [")
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
     let out = runner(&["deps".into(), label.clone()]).output().unwrap();
     assert!(out.status.success(), "deps {label} failed");
 
