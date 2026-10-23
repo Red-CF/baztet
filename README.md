@@ -1,4 +1,4 @@
-# baztet 🐈
+# baztet 🐈‍⬛
 
 [![CI](https://github.com/Red-CF/baztet/actions/workflows/ci.yml/badge.svg)](https://github.com/Red-CF/baztet/actions/workflows/ci.yml)
 [![coverage](https://raw.githubusercontent.com/Red-CF/baztet/gh-pages/coverage.svg)](https://github.com/Red-CF/baztet/actions/workflows/ci.yml)
