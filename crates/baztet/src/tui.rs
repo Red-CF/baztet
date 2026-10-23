@@ -166,24 +166,18 @@ impl TuiTerminal {
 /// from the waiter's parsed result instead.
 fn ingest(state: &mut BepOutput, path: &std::path::Path, offset: usize) -> usize {
     use std::io::{Seek, SeekFrom};
-    match std::fs::File::open(path) {
-        Ok(mut f) => {
-            if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
-                let mut buf = Vec::new();
-                if f.read_to_end(&mut buf).is_ok() {
-                    // a truncated tail is normal mid-write: keep the old
-                    // state and the cursor where it was
-                    match baztet_core::baztet_bep::parse_prefix(&buf, 0) {
-                        Ok((delta, consumed)) => {
-                            state.extend(delta);
-                            return offset + consumed;
-                        }
-                        Err(_) => {}
-                    }
+    if let Ok(mut f) = std::fs::File::open(path) {
+        if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
+            let mut buf = Vec::new();
+            if f.read_to_end(&mut buf).is_ok() {
+                // a truncated tail is normal mid-write: keep the old
+                // state and the cursor where it was
+                if let Ok((delta, consumed)) = baztet_core::baztet_bep::parse_prefix(&buf, 0) {
+                    state.extend(delta);
+                    return offset + consumed;
                 }
             }
         }
-        Err(_) => {}
     }
     offset
 }
@@ -312,9 +306,14 @@ mod tests {
 
     #[test]
     fn dashboard_rows_by_mode() {
-        let mut out = BepOutput::default();
-        out.target_status.insert("//a:good".into(), true);
-        out.target_status.insert("//a:bad".into(), false);
+        let out = BepOutput {
+            target_status: [
+                ("//a:good".to_string(), true),
+                ("//a:bad".to_string(), false),
+            ]
+            .into(),
+            ..BepOutput::default()
+        };
         let backend = TestBackend::new(60, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         draw(
@@ -349,8 +348,10 @@ mod tests {
     #[test]
     fn header_denominator_stabilizes() {
         let requested = 10;
-        let mut out = BepOutput::default();
-        out.test_summaries = [summary("//a:one", "PASSED"), summary("//a:two", "FAILED")].into();
+        let out = BepOutput {
+            test_summaries: [summary("//a:one", "PASSED"), summary("//a:two", "FAILED")].into(),
+            ..BepOutput::default()
+        };
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         draw(
@@ -380,8 +381,10 @@ mod tests {
     #[test]
     fn header_shows_full_when_all_finish() {
         let requested = 2;
-        let mut out = BepOutput::default();
-        out.test_summaries = [summary("//a:one", "PASSED"), summary("//a:two", "FLAKY")].into();
+        let out = BepOutput {
+            test_summaries: [summary("//a:one", "PASSED"), summary("//a:two", "FLAKY")].into(),
+            ..BepOutput::default()
+        };
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         draw(
