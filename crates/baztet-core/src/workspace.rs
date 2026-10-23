@@ -19,6 +19,21 @@ pub fn find_workspace_root(start: &Utf8PathBuf) -> Option<Utf8PathBuf> {
     }
 }
 
+/// Project-view candidates, workspace-relative and in preference order;
+/// the first file that exists wins. `.bazelbsp/.bazelproject` covers the
+/// JetBrains BSP server's generated view (Hirschgarten).
+pub const PV_CANDIDATES: [&str; 2] = [".bazelproject", ".bazelbsp/.bazelproject"];
+
+/// Resolve the project-view file for a workspace: candidates in order.
+/// `None` means no candidate file exists; callers decide whether that is
+/// an error or a default.
+pub fn find_project_view(ws: &Utf8PathBuf) -> Option<Utf8PathBuf> {
+    PV_CANDIDATES
+        .iter()
+        .map(|c| ws.join(c))
+        .find(|p| p.is_file())
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BazelInfo {
     /// e.g. `release 9.3.0`
@@ -97,5 +112,26 @@ bazel-bin: /ws/bazel-bin
         // the temp chain may hold markers above; only assert upward search stops somewhere
         assert!(found.is_some());
         let _ = std::fs::remove_file(marker.join("MODULE.bazel"));
+    }
+
+    #[test]
+    fn project_view_candidates_in_order() {
+        let root = std::env::temp_dir().join(format!("baztet-pv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bazelbsp")).unwrap();
+        let ws = camino::Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        assert!(find_project_view(&ws).is_none());
+        std::fs::write(root.join(".bazelbsp/.bazelproject"), "").unwrap();
+        assert_eq!(
+            find_project_view(&ws).unwrap().as_str(),
+            ws.join(".bazelbsp/.bazelproject")
+        );
+        std::fs::write(root.join(".bazelproject"), "").unwrap();
+        // the plain root view wins over the BSP copy
+        assert_eq!(
+            find_project_view(&ws).unwrap().as_str(),
+            ws.join(".bazelproject")
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

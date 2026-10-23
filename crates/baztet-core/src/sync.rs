@@ -570,6 +570,7 @@ mod tests {
                 ..Default::default()
             },
             tuning_flags: Vec::new(),
+            quiet: false,
         };
         let r1 = runner("release 9.2.0");
         let r2 = runner("release 9.3.0");

@@ -32,6 +32,9 @@ pub struct BazelRunner {
     /// extra bazel flags appended to build/query invocations (e.g.
     /// `--noexperimental_check_output_files` behind `--no-output-check`).
     pub tuning_flags: Vec<String>,
+    /// exec commands capture bazel's console output instead of streaming
+    /// it (quiet UI, `--raw` disables). `run` stays interactive regardless.
+    pub quiet: bool,
 }
 
 impl BazelRunner {
@@ -43,6 +46,7 @@ impl BazelRunner {
             workspace_root,
             info,
             tuning_flags: Vec::new(),
+            quiet: false,
         })
     }
 
@@ -54,6 +58,7 @@ impl BazelRunner {
             workspace_root,
             info,
             tuning_flags: Vec::new(),
+            quiet: false,
         }
     }
 

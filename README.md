@@ -108,22 +108,49 @@ baztet targets  # browse the synced targets
 baztet doctor   # self-check: bazel, workspace, project view, snapshot, aspect
 ```
 
+No configuration is required: baztet auto-discovers the workspace by
+walking up from your current directory, and the project view among the
+known locations (`.bazelproject`, then the JetBrains BSP server's
+`.bazelbsp/.bazelproject`). `--workspace` / `--project-view` override
+either one; `baztet doctor` prints what it found.
+
 Then your daily flows:
 
 ```bash
-baztet build [labels]                  # bazel build with your project view flags
+baztet build [labels]                  # live dashboard like test, quiet or --raw otherwise
 baztet test [labels]                   # BEP-driven results, junit case reports
 baztet test --pattern unit             # select tests by label substring
+baztet test                            # live per-target dashboard; q cancels bazel
+baztet test --cases                    # per-case results for failures/errors
 baztet test --json                     # machine-readable report (targets + cases)
 baztet run LABEL                       # streamed output
-baztet coverage [labels]               # merged lcov report paths
+baztet coverage [labels]               # live dashboard + merged lcov report paths
 baztet recipes                         # your .bazel/*.xml run configs, imported
 baztet recipes --run "web unit tests"  # run one, with its env vars
 ```
 
-`baztet test` exits 3 when any test target did not pass (also FLAKY /
-CANCELLED / TIMEOUT, 0.2 semantics restored), 0 otherwise — for CI to gate
-on. `baztet targets --filter =java_library` selects by rule kind (the `=`
+Anything that is not a baztet command is passed straight through to
+bazel in the discovered workspace: `baztet cquery //pkg:...`,
+`baztet aquery ...` — baztet is a drop-in replacement, not a smaller
+language.
+
+## Output: quiet by default
+
+On a terminal, `test`/`build`/`coverage` run the live dashboard: an alt
+screen table of targets (colored verdicts for `test`, completions and
+failures first for `build`/`coverage`, counts in the header), read live
+from the BEP stream. `q` / ctrl-c cancels bazel and reports what was
+written so far. No flag decides this — the dashboard is what running on
+a terminal looks like. Without a tty (pipes, CI) the same command runs
+quietly: a Bastet spinner while bazel works, every warning line after
+it finishes, the raw error output (stderr then stdout, 400-line tail)
+only when something fails. A green build is one line. `--raw` restores
+full streaming on every command; `run` stays interactive by definition.
+
+Exit codes keep their contract: `test` exits 3 when any test target did
+not pass (FLAKY / CANCELLED / TIMEOUT included), 0 otherwise — for CI to
+gate on. Passthrough executes forward bazel's own exit code untouched.
+`baztet targets --filter =java_library` selects by rule kind (the `=`
 prefix); plain filters match label substrings.
 
 ## How sync stays fast
@@ -162,6 +189,8 @@ Useful flags:
   so warm builds skip its output-file freshness scan. Opt-in on purpose:
   Bazel trusts outputs that are present on disk, so run a checked build
   before publishing artifacts.
+- `--raw` (global): stream every command's bazel output live instead of
+  the quiet capture.
 
 ## Performance
 
@@ -200,7 +229,7 @@ Crates, what each is for, where to start reading:
 
 | crate | role |
 |---|---|
-| `baztet` (`main.rs`) | CLI: argument parsing, exit codes, stderr presentation. `--json`/machine output never touch it. |
+| `baztet` | the CLI. Modules: `main.rs` = clap definitions + a 10-line dispatcher; `ctx.rs` = the per-command context (workspace/PV/runner/snapshot, built once); `commands.rs` = one function per subcommand; `ui.rs` = stderr presentation (`--json`/machine output never touch it); `tui.rs` = the alt-screen test dashboard. |
 | `baztet-core` | the pipeline. Start at `sync::sync` (orchestration); `query.rs` for phase 1 and `reuse.rs` for the reuse ladder (pure, table-tested); `exec.rs` for build/test/run/coverage; `aspect.rs` for deploying the vendored `intellij-aspect`; `ideinfo.rs` decodes the `TargetIdeInfo` text-format protos. |
 | `baztet-protos` | prost codegen for the vendored Bazel protos (`blaze_query`, build event stream) — a leaf, no internal deps. |
 | `baztet-bep` | BEP binary stream → queryable `BepOutput`. Leaf. |
