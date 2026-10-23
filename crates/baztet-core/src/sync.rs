@@ -566,21 +566,17 @@ mod tests {
     fn fingerprint_sensitive_to_runner() {
         let pv = ProjectView::default();
         let specs = vec!["//:all".to_string()];
-        let mut info = crate::workspace::BazelInfo::default();
-        info.release = "release 9.2.0".into();
-        let r1 = BazelRunner {
+        let runner = |release: &str| BazelRunner {
             binary: "bazel".into(),
             workspace_root: "/ws".into(),
-            info: info.clone(),
+            info: crate::workspace::BazelInfo {
+                release: release.into(),
+                ..Default::default()
+            },
             tuning_flags: Vec::new(),
         };
-        info.release = "release 9.3.0".into();
-        let r2 = BazelRunner {
-            binary: "bazel".into(),
-            workspace_root: "/ws".into(),
-            info,
-            tuning_flags: Vec::new(),
-        };
+        let r1 = runner("release 9.2.0");
+        let r2 = runner("release 9.3.0");
         assert_eq!(sync_fingerprint(&specs, &pv, &r1), sync_fingerprint(&specs, &pv, &r1));
         assert_ne!(sync_fingerprint(&specs, &pv, &r1), sync_fingerprint(&specs, &pv, &r2));
     }
