@@ -13,8 +13,8 @@ use baztet_core::baztet_bep::BepOutput;
 use baztet_core::exec::{ExecChild, ExecResult};
 
 /// Forked `bazel test` driven through the alt screen; returns the same
-/// [`ExecResult`] the non-TUI path would have produced. Every exit path
-/// restores the terminal (the guard's Drop covers early `?`s).
+/// [`ExecResult`] the non-TUI path would have produced, terminal restored
+/// on every exit path.
 pub async fn run_test(child: ExecChild, pending: Vec<String>) -> anyhow::Result<ExecResult> {
     let mut terminal = TuiTerminal::enter()?;
     let result = terminal.drive(child, pending).await;
@@ -118,8 +118,7 @@ fn draw(
     elapsed: Duration,
 ) -> anyhow::Result<()> {
     let done = summaries.len();
-    // the dashboard denominates by the requested list, which never grows
-    // while targets finish; old code grew it on every completion
+    // the denominator is the requested list: it never grows while targets finish
     let total = requested.max(done);
     let header = format!(
         " baztet test — {done}/{total} targets · {:.0}s",

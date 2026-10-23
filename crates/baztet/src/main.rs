@@ -882,11 +882,9 @@ async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     Ok(BazelRunner::discover(&binary, &ws).await?)
 }
 
-/// Post-process a captured exec run (`BazelRunner::quiet` or the TUI):
-/// warnings always surface, failures dump bazel's raw output. Uncaptured
-/// runs (`--raw`, `run`) already streamed everything; no-op there.
-/// `show_status=false` skips the ok/fail line (`test` prints its own
-/// verdict-driven summary and exit code 3 on failures, not bazel's).
+/// Quiet-UI post-processing of a captured run: warnings surface, failures
+/// dump raw bazel output (`--raw`/`run` streamed already). `test` calls
+/// with show_status=false — its verdict summary and exit 3 own the report.
 fn present_exec(command: &str, result: &baztet_core::exec::ExecResult, show_status: bool) {
     let Some(out) = &result.output else {
         return;
