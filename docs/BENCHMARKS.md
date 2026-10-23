@@ -18,7 +18,16 @@ meaningless). Reproduce with:
 
 The honest reading: sync wall-clock is dominated by Bazel's own analysis;
 the cold range (29-53 s) is Bazel cache warmth, not baztet. The baztet-side
-win is the **reuse ladder**: identical inputs never touch Bazel.
+win is the **reuse ladder**: identical inputs never touch Bazel. Building
+on that, this release narrows what the incremental path gives Bazel:
+
+- delta aspect builds: after a BUILD edit, `--aspects` runs only on the
+  targets of changed packages — the affected fraction of the analysis
+  window, not all of it
+- cached `bazel info` in the snapshot: `targets`/`deps`/`build`/`test`
+  stop paying the info spawn
+- opt-in `--no-output-check` (`--noexperimental_check_output_files`):
+  skips Bazel's output-freshness scan on warm builds
 
 ## Query paths (snapshot load)
 

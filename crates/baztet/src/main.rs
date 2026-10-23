@@ -8,7 +8,7 @@ use baztet_core::{sync as sync_engine, BazelError, BazelRunner};
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
-// ---- UI: stderr presentation; --json and machine outputs stay untouched ---
+// stderr presentation; --json and machine outputs stay untouched
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream;
@@ -85,6 +85,11 @@ struct Cli {
     /// env: BAZTET_CACHE_DIR)
     #[arg(long, global = true, env = "BAZTET_CACHE_DIR")]
     cache_dir: Option<Utf8PathBuf>,
+
+    /// skip bazel's output-file freshness scan (`--noexperimental_check_
+    /// output_files`): warm syncs get faster, stale outputs are trusted
+    #[arg(long, global = true)]
+    no_output_check: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -263,7 +268,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
 
     match &cli.command {
         Command::Sync { json, fresh, fast } => {
-            let runner = discover(cli).await?;
+            let runner = runner_for(cli, true).await?;
             let pv_path = cli
                 .project_view
                 .clone()
@@ -324,7 +329,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             labels,
             passthrough,
         } => {
-            let runner = discover(cli).await?;
+            let runner = runner_for(cli, false).await?;
             let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = default_labels(&snapshot, labels)?;
             let result = runner
@@ -343,7 +348,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             json,
             passthrough,
         } => {
-            let runner = discover(cli).await?;
+            let runner = runner_for(cli, false).await?;
             let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = test_labels(&snapshot, labels, pattern)?;
             let mut spec = spec(labels, passthrough.clone());
@@ -429,7 +434,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             ))
         }
         Command::Run { label, passthrough } => {
-            let runner = discover(cli).await?;
+            let runner = runner_for(cli, false).await?;
             let result = runner
                 .exec_run(
                     &load_pv(&runner, None)?,
@@ -442,7 +447,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             labels,
             passthrough,
         } => {
-            let runner = discover(cli).await?;
+            let runner = runner_for(cli, false).await?;
             let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = default_labels(&snapshot, labels)?;
             let result = runner
@@ -467,7 +472,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             Ok(exit_for("coverage", result.code))
         }
         Command::Recipes { run, json } => {
-            let runner = discover(cli).await?;
+            let runner = runner_for(cli, false).await?;
             let pv = load_pv(&runner, cli.project_view.as_ref())?;
             let mut recipes: Vec<Recipe> = Vec::new();
             let mut missing = 0usize;
@@ -738,8 +743,21 @@ fn load_snapshot(ws_root: Utf8PathBuf) -> anyhow::Result<baztet_snapshot::Snapsh
         .map_err(|e| anyhow::anyhow!("no snapshot under {ws_root}: {e} — run `baztet sync` first"))
 }
 
-/// Discover workspace + probe the bazel binary.
-async fn discover(cli: &Cli) -> anyhow::Result<BazelRunner> {
+/// Runner plus tuning flags (`--no-output-check`).
+async fn runner_for(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
+    let mut runner = discover(cli, refresh).await?;
+    if cli.no_output_check {
+        runner
+            .tuning_flags
+            .push("--noexperimental_check_output_files".to_string());
+    }
+    Ok(runner)
+}
+
+/// Discover workspace + probe the bazel binary. `refresh` forces a live
+/// `bazel info`; otherwise a snapshot's cached info text is reused, so
+/// exec commands skip the info spawn.
+async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     let ws = workspace_of(cli)?;
     // --bazel wins; else the project view's `bazel_binary`; else `bazel`
     let binary = match &cli.bazel {
@@ -755,5 +773,13 @@ async fn discover(cli: &Cli) -> anyhow::Result<BazelRunner> {
             }
         }
     };
+    if !refresh {
+        if let Ok(snapshot) = baztet_snapshot::Snapshot::load(&ws) {
+            if let Some(text) = &snapshot.bazel_info_text {
+                let info = baztet_core::workspace::parse_info(text);
+                return Ok(BazelRunner::from_cached_info(&binary, ws, info));
+            }
+        }
+    }
     Ok(BazelRunner::discover(&binary, &ws).await?)
 }

@@ -11,7 +11,7 @@ use camino::Utf8PathBuf;
 
 use crate::aspect::{self, AspectConfig, Rules};
 use crate::bazel::{BazelError, BazelRunner};
-use crate::expand::expand_directory_targets;
+use crate::expand::{package_build_mtimes, expand_directory_targets};
 pub use crate::query::{batch_specs, target_specs, DEFAULT_SHARD_SIZE};
 pub use crate::reuse::{decide_reuse, sync_fingerprint, Reuse};
 
@@ -30,6 +30,9 @@ pub async fn sync(
         // a missing or corrupt snapshot just falls through to a full query
         Snapshot::load(&runner.workspace_root).ok()
     };
+    let recorded_pkg_mtimes = existing
+        .as_ref()
+        .and_then(|s| s.build_pkg_mtimes.clone());
 
     if let Some(existing) = existing {
         let specs = target_specs(pv, runner.workspace_root.as_str());
@@ -47,9 +50,16 @@ pub async fn sync(
             let mut snapshot = existing;
             if decision == Reuse::Graph {
                 eprintln!("[baztet] project view unchanged; refreshing aspect outputs");
-                let aspect_secs = run_aspect_phase_once(runner, pv, &mut snapshot).await;
+                let all_targets = snapshot.specified_targets.clone();
+                let aspect_secs =
+                    run_aspect_phase_once(runner, pv, &mut snapshot, &all_targets, false).await;
                 let parsed = parse_count();
                 snapshot.build_files_mtime = max_build_mtime(pv, &runner.workspace_root);
+                snapshot.build_pkg_mtimes = Some(package_build_mtimes(
+                    pv,
+                    runner.workspace_root.as_str(),
+                ));
+                snapshot.bazel_info_text = runner.info.text.clone();
                 return Ok(crate::reuse::SyncReport {
                     snapshot,
                     reuse: Reuse::Graph,
@@ -83,10 +93,22 @@ pub async fn sync(
     let mut aspect_secs = None;
     let mut parsed = 0usize;
     if run_aspect_phase {
-        aspect_secs = Some(run_aspect_phase_once(runner, pv, &mut snapshot).await);
+        // delta mode: rebuild only targets in packages whose BUILD changed
+        // since the recorded snapshot; everything else keeps cached aspect
+        // outputs (this is where the incremental win lives)
+        let (targets, delta_ran) =
+            delta_aspect_targets(recorded_pkg_mtimes, pv, &runner.workspace_root, &snapshot.specified_targets);
+        aspect_secs = Some(run_aspect_phase_once(runner, pv, &mut snapshot, &targets, delta_ran).await);
         parsed = parse_count();
     }
+    let current_mtimes = package_build_mtimes(pv, runner.workspace_root.as_str());
     snapshot.build_files_mtime = max_build_mtime(pv, &runner.workspace_root);
+    snapshot.build_pkg_mtimes = if current_mtimes.is_empty() {
+        None
+    } else {
+        Some(current_mtimes)
+    };
+    snapshot.bazel_info_text = runner.info.text.clone();
     Ok(crate::reuse::SyncReport {
         reuse: Reuse::FullQuery,
         snapshot,
@@ -96,14 +118,60 @@ pub async fn sync(
     })
 }
 
+/// Aspect-build targets. Delta mode (a recorded per-package mtime map in
+/// the snapshot and non-empty changes): only labels in changed packages,
+/// so bazel re-analyzes just the fraction. Fall back to every specified
+/// target when there is no recorded map, nothing changed, or no label
+/// matched — a narrower list there would leave outputs missing.
+fn delta_aspect_targets(
+    recorded: Option<BTreeMap<String, u64>>,
+    pv: &ProjectView,
+    workspace_root: &Utf8PathBuf,
+    specs: &[String],
+) -> (Vec<String>, bool) {
+    let Some(recorded) = recorded.filter(|r| !r.is_empty() && !specs.is_empty()) else {
+        return (specs.to_vec(), false);
+    };
+    let changed = changed_packages(&recorded, &package_build_mtimes(pv, workspace_root.as_str()));
+    let targets: Vec<String> = changed
+        .iter()
+        .flat_map(|pkg| {
+            let prefix = format!("//{pkg}:");
+            specs
+                .iter()
+                .filter(move |s| s == &pkg || s.starts_with(&prefix))
+                .cloned()
+        })
+        .collect();
+    if targets.is_empty() {
+        return (specs.to_vec(), false);
+    }
+    (targets, true)
+}
+
+/// Packages whose BUILD mtime changed or that are new vs the recorded map.
+/// Removed packages don't matter: their targets left the graph already.
+fn changed_packages(
+    recorded: &BTreeMap<String, u64>,
+    current: &BTreeMap<String, u64>,
+) -> BTreeSet<String> {
+    current
+        .iter()
+        .filter(|(pkg, mtime)| recorded.get(*pkg) != Some(*mtime))
+        .map(|(pkg, _)| pkg.clone())
+        .collect()
+}
+
 /// Run the aspect phase and persist its error into the snapshot; returns seconds.
 async fn run_aspect_phase_once(
     runner: &BazelRunner,
     pv: &ProjectView,
     snapshot: &mut Snapshot,
+    targets: &[String],
+    delta_ran: bool,
 ) -> f64 {
     let t = std::time::Instant::now();
-    match aspect_sync(runner, pv, snapshot).await {
+    match aspect_sync(runner, pv, snapshot, targets, delta_ran).await {
         Ok(()) => {}
         Err(e) => {
             eprintln!("[baztet] aspect sync failed: {e}");
@@ -167,11 +235,15 @@ fn bazel_repo_mapping(runner: &BazelRunner) -> BTreeMap<String, String> {
     serde_json::from_str(&stdout[json_start..]).unwrap_or_default()
 }
 
-/// Phase 2: aspect sync → TargetIdeInfo summaries.
+/// Phase 2: aspect sync → TargetIdeInfo summaries. `targets` is the build
+/// target list (delta subset or all); `delta_ran` marks a scoped BEP, whose
+/// entries say nothing about the untouched targets' outputs.
 pub async fn aspect_sync(
     runner: &BazelRunner,
     pv: &ProjectView,
     snapshot: &mut Snapshot,
+    targets: &[String],
+    delta_ran: bool,
 ) -> Result<(), BazelError> {
     let languages = detect_languages(&snapshot.graph);
     let os_name = std::env::consts::OS.to_string();
@@ -232,7 +304,7 @@ pub async fn aspect_sync(
         "--bes_outerr_buffer_size=10".to_string(),
     ];
     // target patterns for `bazel build` are plain labels, one per argument
-    argv.extend(snapshot.specified_targets.iter().cloned());
+    argv.extend(targets.iter().cloned());
     argv.extend(pv.sync_flags.iter().cloned());
 
     let (code, _stdout, stderr) = runner.run_simple("build", &argv).await?;
@@ -246,7 +318,7 @@ pub async fn aspect_sync(
     // prefer `bazel config --dump_all` (bzlmod config ids); BEP events as fallback
     snapshot.configurations = fetch_configurations(runner, &output).await;
 
-    merge_ide_infos(runner, &output, snapshot);
+    merge_ide_infos(runner, &output, snapshot, delta_ran);
 
     if code != 0 {
         eprintln!("[baztet] aspect build exited with code {code}:\n{stderr}");
@@ -270,13 +342,18 @@ async fn fetch_configurations(
 /// Parse count set by the rayon workers, read by `sync` for SyncReport.parsed.
 static PARSE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-fn merge_ide_infos(runner: &BazelRunner, output: &BepOutput, snapshot: &mut Snapshot) {
+fn merge_ide_infos(
+    runner: &BazelRunner,
+    output: &BepOutput,
+    snapshot: &mut Snapshot,
+    delta_ran: bool,
+) {
     use rayon::prelude::*;
 
     PARSE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     let execution_root = runner.info.execution_root.clone();
 
-    // 1) collect the work: (ide entry key, BEP key, file path, mtime)
+    // work items: (ide entry key, BEP key, file path, mtime)
     let mut jobs: Vec<(String, camino::Utf8PathBuf, Option<std::time::Duration>)> = Vec::new();
     for key in output.target_outputs.keys() {
         let files = output.files_for_target_group(key, baztet_bep::OUTPUT_GROUP_INFO);
@@ -300,7 +377,7 @@ fn merge_ide_infos(runner: &BazelRunner, output: &BepOutput, snapshot: &mut Snap
         .unwrap(),
     );
 
-    // 2) parse in parallel (indicatif progress is Send, rayon drives the loop);
+    // parse in parallel (indicatif progress is Send, rayon drives the loop);
     //    rayon blocks inside the async runtime worker, so run under
     //    block_in_place to keep the multi-thread executor responsive
     //    (single-thread runtimes would panic here — CLI always uses
@@ -332,7 +409,7 @@ fn merge_ide_infos(runner: &BazelRunner, output: &BepOutput, snapshot: &mut Snap
             })
             .collect();
 
-        // 3) merge sequentially (needs &mut snapshot); identity without key: skip
+        // merge sequentially; entries without a target key are skipped
         let mut skipped = 0usize;
         for item in parsed {
             let Some((bep_key, path, mtime, msg)) = item else {
@@ -376,13 +453,18 @@ fn merge_ide_infos(runner: &BazelRunner, output: &BepOutput, snapshot: &mut Snap
         }
     });
 
-    // prune reuse metadata whose BEP keys no longer exist in this build
-    let live: BTreeSet<String> = output
-        .target_outputs
-        .keys()
-        .map(|k| format!("{}!{}", k.label, k.configuration))
-        .collect();
-    snapshot.ide_sources_meta.retain(|k, _| live.contains(k));
+    // prune reuse metadata for BEP keys gone from this build. In delta mode
+    // the BEP only covers the changed subset, so the untouched outputs stay
+    // valid: skip the prune there (stale keys leak only through workspace
+    // churn and cost nothing to keep).
+    if !delta_ran {
+        let live: BTreeSet<String> = output
+            .target_outputs
+            .keys()
+            .map(|k| format!("{}!{}", k.label, k.configuration))
+            .collect();
+        snapshot.ide_sources_meta.retain(|k, _| live.contains(k));
+    }
 
     // prune ide summaries for targets that no longer exist in the graph
     // (otherwise deleted targets linger forever in stats/targets output)
@@ -424,6 +506,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn delta_packages_are_changed_and_new() {
+        let recorded: BTreeMap<String, u64> = BTreeMap::from([
+            ("a".into(), 1),
+            ("b".into(), 2),
+            ("gone".into(), 3),
+        ]);
+        let current: BTreeMap<String, u64> = BTreeMap::from([
+            ("a".into(), 1),        // unchanged
+            ("b".into(), 5),        // changed
+            ("new".into(), 7),      // added
+        ]);
+        let delta = changed_packages(&recorded, &current);
+        assert_eq!(delta, BTreeSet::from(["b".to_string(), "new".to_string()]));
+    }
+
+    #[test]
+    fn no_delta_when_identical() {
+        let m: BTreeMap<String, u64> = BTreeMap::from([("a".into(), 1)]);
+        assert!(changed_packages(&m, &m).is_empty());
+    }
+
+    #[test]
     fn aspect_output_meta_contract() {
         // unchanged path+mtime -> already fresh (not "newer"); anything else re-parses
         assert!(!file_is_newer(
@@ -456,12 +560,14 @@ mod tests {
             binary: "bazel".into(),
             workspace_root: "/ws".into(),
             info: info.clone(),
+            tuning_flags: Vec::new(),
         };
         info.release = "release 9.3.0".into();
         let r2 = BazelRunner {
             binary: "bazel".into(),
             workspace_root: "/ws".into(),
             info,
+            tuning_flags: Vec::new(),
         };
         assert_eq!(sync_fingerprint(&specs, &pv, &r1), sync_fingerprint(&specs, &pv, &r1));
         assert_ne!(sync_fingerprint(&specs, &pv, &r1), sync_fingerprint(&specs, &pv, &r2));

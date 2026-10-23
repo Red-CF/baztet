@@ -40,6 +40,15 @@ pub struct Snapshot {
     /// BUILD changes without re-querying
     #[serde(default)]
     pub build_files_mtime: Option<u64>,
+    /// per-package BUILD mtimes (unix secs) at last sync, when directories
+    /// derive targets; delta aspect builds diff against this
+    #[serde(default)]
+    pub build_pkg_mtimes: Option<BTreeMap<String, u64>>,
+    /// raw `bazel info` text from the last sync; exec commands reuse it to
+    /// skip the info spawn (stale after a workspace/config change, the next
+    /// sync refreshes it)
+    #[serde(default)]
+    pub bazel_info_text: Option<String>,
     /// workspace configurations seen in BEP, keyed by configuration id
     #[serde(default)]
     pub configurations: BTreeMap<String, ConfigurationLite>,

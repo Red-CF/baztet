@@ -170,6 +170,9 @@ impl BazelRunner {
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
         cmd.envs(&spec.env);
+        if !self.tuning_flags.is_empty() {
+            cmd.args(&self.tuning_flags);
+        }
         let status = cmd.spawn()?.wait().await?;
 
         let bep = read_bep_or_none(&bep_file)?;

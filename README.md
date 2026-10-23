@@ -105,15 +105,20 @@ a few hundred KB for a thousand-target scope. Incremental by default:
 - unchanged project view -> the query graph is reused, no re-query
 - unchanged BUILD files (max mtime over the package walk) -> the whole
   snapshot is reused, sub-second re-sync
-- changed BUILD files -> only modified `*.intellij-info.txt` aspect outputs
-  are re-parsed (path+mtime reuse, rayon-parallel in 0.3.0)
+- changed BUILD files -> `bazel build --aspects` runs only on the targets
+  of changed packages (per-package BUILD mtimes recorded in the snapshot);
+  unaffected aspect outputs keep their cache and are reused without a
+  parse (path+mtime reuse, rayon-parallel in 0.3.0)
 
 Storage: the snapshot lives in your platform cache dir
 (`~/Library/Caches/baztet/<workspace-hash>/` — outside the repo, zero git
-noise) and the aspect dir is self-ignored (`.baztet/.gitignore`), so your
-repo's git history is untouched.
+noise; per-package mtimes included) and the aspect dir is self-ignored
+(`.baztet/.gitignore`), so your repo's git history is untouched.
 
 `--fresh` forces a full re-query; `--fast` skips the aspect phase.
+`--no-output-check` passes `--noexperimental_check_output_files` to Bazel:
+warm builds skip its output-file freshness scan (Bazel trusts outputs that
+are present; run a checked build before publishing artifacts).
 
 ## Performance
 
@@ -133,7 +138,10 @@ real Bazel 9 workspace (~756 targets); full methodology and numbers in
 
 Honest note: Bazel itself dominates sync wall-clock. baztet's wins are
 process-level: no IDE/JVM boot, streaming proto decode (near-constant
-memory), and the reuse ladder — identical inputs never touch Bazel.
+memory), the reuse ladder — identical inputs never touch Bazel — delta
+aspect builds scoped to packages with changed BUILD files, cached
+`bazel info` so exec commands skip the info spawn, and opt-in
+`--no-output-check`.
 
 ## Status
 

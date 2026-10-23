@@ -29,6 +29,9 @@ pub struct BazelRunner {
     pub binary: String,
     pub workspace_root: Utf8PathBuf,
     pub info: BazelInfo,
+    /// extra bazel flags appended to build/query invocations (e.g.
+    /// `--noexperimental_check_output_files` behind `--no-output-check`).
+    pub tuning_flags: Vec<String>,
 }
 
 impl BazelRunner {
@@ -39,7 +42,19 @@ impl BazelRunner {
             binary: binary.to_string(),
             workspace_root,
             info,
+            tuning_flags: Vec::new(),
         })
+    }
+
+    /// Runner pre-built from a cached `bazel info` text (snapshots carry it);
+    /// caller sets tuning_flags.
+    pub fn from_cached_info(binary: &str, workspace_root: Utf8PathBuf, info: BazelInfo) -> Self {
+        Self {
+            binary: binary.to_string(),
+            workspace_root,
+            info,
+            tuning_flags: Vec::new(),
+        }
     }
 
     /// Convenience: discover the workspace upward from `start` and probe bazel.
@@ -56,7 +71,7 @@ impl BazelRunner {
             .kill_on_drop(true)
             .output()
             .await?;
-        let text = String::from_utf8_lossy(&out.stdout);
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
         if !out.status.success() {
             return Err(BazelError::Failure(
                 "info".into(),
@@ -64,7 +79,9 @@ impl BazelRunner {
                 format!("{text}\n{}", String::from_utf8_lossy(&out.stderr)),
             ));
         }
-        Ok(crate::workspace::parse_info(&text))
+        let mut info = crate::workspace::parse_info(&text);
+        info.text = Some(text);
+        Ok(info)
     }
 
     /// Blocking variant of [`run_simple`] for short helper commands.
@@ -99,6 +116,7 @@ impl BazelRunner {
         cmd.current_dir(&self.workspace_root)
             .arg(command)
             .args(args)
+            .args(&self.tuning_flags)
             .stdin(Stdio::null())
             .kill_on_drop(true);
         let out = cmd.output().await?;

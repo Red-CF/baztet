@@ -132,4 +132,17 @@ fn full_sync_and_execution() {
     assert!(out.status.success(), "run failed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("hello"), "run output:\n{stdout}");
+
+    // incremental: touch a fixture BUILD, sync again — the delta aspect
+    // path must re-sync the same targets without error
+    let build = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/simple/BUILD.bazel");
+    std::fs::File::options().append(true).open(build).unwrap()
+        .set_modified(std::time::SystemTime::now()).unwrap();
+    let out = run_bazet(&["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "second sync failed:\n{stderr}");
+    assert!(
+        stderr.contains("3 target(s)"),
+        "unexpected output:\n{stderr}"
+    );
 }

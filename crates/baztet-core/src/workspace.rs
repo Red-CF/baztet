@@ -29,6 +29,9 @@ pub struct BazelInfo {
     pub bazel_bin: Utf8PathBuf,
     /// raw dump for debugging
     pub extra: BTreeMap<String, String>,
+    /// original `bazel info` text, set by run_info; snapshots persist it so
+    /// exec commands can rebuild the info without spawning bazel
+    pub text: Option<String>,
 }
 
 impl BazelInfo {
