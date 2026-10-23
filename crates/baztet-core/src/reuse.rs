@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::bazel::BazelRunner;
 use baztet_projectview::ProjectView;
 use baztet_snapshot::Snapshot;
-use crate::bazel::BazelRunner;
 
 /// What one `sync` run produced: the snapshot, reuse level, timings, parse counts.
 #[derive(Debug, Clone)]
@@ -141,7 +141,13 @@ mod tests {
     fn mismatched_fingerprint_always_full_query() {
         let recorded = facts(Some(1), map_of(&[("a", 1)]));
         assert_eq!(
-            decide_reuse(false, &recorded, &cur(Some(1), map_of(&[("a", 1)]), true), true, true),
+            decide_reuse(
+                false,
+                &recorded,
+                &cur(Some(1), map_of(&[("a", 1)]), true),
+                true,
+                true
+            ),
             Reuse::FullQuery
         );
     }
@@ -150,7 +156,13 @@ mod tests {
     fn unchanged_pkg_map_reuse_everything() {
         let recorded = facts(Some(1), map_of(&[("a", 1), ("b", 2)]));
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(1), map_of(&[("a", 1), ("b", 2)]), true), true, true),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(1), map_of(&[("a", 1), ("b", 2)]), true),
+                true,
+                true
+            ),
             Reuse::Everything
         );
     }
@@ -161,7 +173,13 @@ mod tests {
         // the per-package map catches the addition
         let recorded = facts(Some(3), map_of(&[("a", 3)]));
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(3), map_of(&[("a", 3), ("b", 1)]), true), true, true),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(3), map_of(&[("a", 3), ("b", 1)]), true),
+                true,
+                true
+            ),
             Reuse::FullQuery
         );
     }
@@ -170,7 +188,13 @@ mod tests {
     fn changed_package_is_stale() {
         let recorded = facts(Some(5), map_of(&[("a", 1)]));
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(5), map_of(&[("a", 5)]), true), true, true),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(5), map_of(&[("a", 5)]), true),
+                true,
+                true
+            ),
             Reuse::FullQuery
         );
     }
@@ -179,7 +203,13 @@ mod tests {
     fn removed_package_is_stale() {
         let recorded = facts(Some(3), map_of(&[("a", 3), ("b", 3)]));
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(3), map_of(&[("a", 3)]), true), true, true),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(3), map_of(&[("a", 3)]), true),
+                true,
+                true
+            ),
             Reuse::FullQuery
         );
     }
@@ -198,11 +228,23 @@ mod tests {
         // old snapshots carry only the max mtime
         let recorded = facts(Some(9), map_of(&[]));
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(9), map_of(&[("a", 1)]), true), true, true),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(9), map_of(&[("a", 1)]), true),
+                true,
+                true
+            ),
             Reuse::Everything
         );
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(10), map_of(&[("a", 1)]), true), true, true),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(10), map_of(&[("a", 1)]), true),
+                true,
+                true
+            ),
             Reuse::FullQuery
         );
     }
@@ -216,7 +258,13 @@ mod tests {
         );
         // derive-off has no recorded facts either; nothing can drift
         assert_eq!(
-            decide_reuse(true, &facts(None, map_of(&[])), &cur(None, map_of(&[]), false), true, true),
+            decide_reuse(
+                true,
+                &facts(None, map_of(&[])),
+                &cur(None, map_of(&[]), false),
+                true,
+                true
+            ),
             Reuse::Everything
         );
     }
@@ -225,12 +273,24 @@ mod tests {
     fn aspect_refresh_when_no_data() {
         let recorded = facts(Some(9), map_of(&[("a", 9)]));
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(9), map_of(&[("a", 9)]), true), true, false),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(9), map_of(&[("a", 9)]), true),
+                true,
+                false
+            ),
             Reuse::Graph
         );
         // --fast with no ide data: nothing aspect-y to refresh, reuse all
         assert_eq!(
-            decide_reuse(true, &recorded, &cur(Some(9), map_of(&[("a", 9)]), true), false, false),
+            decide_reuse(
+                true,
+                &recorded,
+                &cur(Some(9), map_of(&[("a", 9)]), true),
+                false,
+                false
+            ),
             Reuse::Everything
         );
     }

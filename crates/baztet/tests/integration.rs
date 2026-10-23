@@ -62,7 +62,9 @@ fn full_sync_and_execution() {
     let cache = std::env::temp_dir().join(format!("baztet-test-cache-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&cache);
     let _env = CacheEnv {
-        _prev: std::env::var("BAZTET_CACHE_DIR").ok().map(std::ffi::OsString::from),
+        _prev: std::env::var("BAZTET_CACHE_DIR")
+            .ok()
+            .map(std::ffi::OsString::from),
         dir: cache.clone(),
     };
     std::env::set_var("BAZTET_CACHE_DIR", &cache);
@@ -132,9 +134,16 @@ fn full_sync_and_execution() {
 
     // incremental: touch a fixture BUILD, sync again — the delta aspect
     // path must re-sync the same targets without error
-    let build = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/simple/BUILD.bazel");
-    std::fs::File::options().append(true).open(build).unwrap()
-        .set_modified(std::time::SystemTime::now()).unwrap();
+    let build = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/simple/BUILD.bazel"
+    );
+    std::fs::File::options()
+        .append(true)
+        .open(build)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now())
+        .unwrap();
     let out = run_bazet(&["sync"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "second sync failed:\n{stderr}");

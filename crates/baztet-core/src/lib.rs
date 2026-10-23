@@ -12,4 +12,4 @@ pub mod sync;
 pub mod workspace;
 
 pub use bazel::{BazelError, BazelRunner};
-pub use reuse::{SyncReport, Reuse};
+pub use reuse::{Reuse, SyncReport};

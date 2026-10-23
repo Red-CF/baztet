@@ -28,9 +28,7 @@ pub async fn sync(
         // a missing or corrupt snapshot just falls through to a full query
         Snapshot::load(&runner.workspace_root).ok()
     };
-    let recorded_pkg_mtimes = existing
-        .as_ref()
-        .and_then(|s| s.build_pkg_mtimes.clone());
+    let recorded_pkg_mtimes = existing.as_ref().and_then(|s| s.build_pkg_mtimes.clone());
 
     // one walk feeds the ladder, the delta selector and the recording
     let current_mtimes = package_build_mtimes(pv, runner.workspace_root.as_str());
@@ -42,9 +40,9 @@ pub async fn sync(
 
     if let Some(existing) = existing {
         let specs = target_specs(pv, runner.workspace_root.as_str());
-        let fingerprints_match =
-            existing.sync_fingerprint == Some(sync_fingerprint(&specs, pv, runner))
-                && !existing.graph.is_empty();
+        let fingerprints_match = existing.sync_fingerprint
+            == Some(sync_fingerprint(&specs, pv, runner))
+            && !existing.graph.is_empty();
         let recorded = RecordedFacts {
             build_mtime: existing.build_files_mtime,
             pkg_mtimes: recorded_pkg_mtimes.clone(),
@@ -73,14 +71,8 @@ pub async fn sync(
                 let all_targets = snapshot.specified_targets.clone();
                 // refresh starts clean; a failing aspect re-marks it
                 snapshot.has_error = false;
-                let aspect_secs = run_aspect_phase_once(
-                    runner,
-                    pv,
-                    &mut snapshot,
-                    &all_targets,
-                    false,
-                )
-                .await;
+                let aspect_secs =
+                    run_aspect_phase_once(runner, pv, &mut snapshot, &all_targets, false).await;
                 refresh_snapshot_meta(&mut snapshot, runner, &current_mtimes);
                 return Ok(crate::reuse::SyncReport {
                     snapshot,
@@ -110,8 +102,11 @@ pub async fn sync(
     let mut aspect_secs = None;
     let mut parsed = 0usize;
     if run_aspect_phase {
-        let (targets, delta_ran) =
-            delta_aspect_targets(recorded_pkg_mtimes.as_ref(), &current_mtimes, &snapshot.specified_targets);
+        let (targets, delta_ran) = delta_aspect_targets(
+            recorded_pkg_mtimes.as_ref(),
+            &current_mtimes,
+            &snapshot.specified_targets,
+        );
         aspect_secs =
             Some(run_aspect_phase_once(runner, pv, &mut snapshot, &targets, delta_ran).await);
         parsed = parse_count();
@@ -519,15 +514,12 @@ mod tests {
 
     #[test]
     fn delta_packages_are_changed_and_new() {
-        let recorded: BTreeMap<String, u64> = BTreeMap::from([
-            ("a".into(), 1),
-            ("b".into(), 2),
-            ("gone".into(), 3),
-        ]);
+        let recorded: BTreeMap<String, u64> =
+            BTreeMap::from([("a".into(), 1), ("b".into(), 2), ("gone".into(), 3)]);
         let current: BTreeMap<String, u64> = BTreeMap::from([
-            ("a".into(), 1),        // unchanged
-            ("b".into(), 5),        // changed
-            ("new".into(), 7),      // added
+            ("a".into(), 1),   // unchanged
+            ("b".into(), 5),   // changed
+            ("new".into(), 7), // added
         ]);
         let delta = changed_packages(&recorded, &current);
         assert_eq!(delta, BTreeSet::from(["b".to_string(), "new".to_string()]));
@@ -558,7 +550,11 @@ mod tests {
             Some(&"bazel-out/x/OLD.txt@1700000000".to_string())
         ));
         // no meta (first sync) -> newer
-        assert!(file_is_newer(Some(std::time::Duration::new(1, 0)), "a", None));
+        assert!(file_is_newer(
+            Some(std::time::Duration::new(1, 0)),
+            "a",
+            None
+        ));
         assert!(file_is_newer(None, "a", Some(&"a@1".to_string())));
     }
 
@@ -577,7 +573,13 @@ mod tests {
         };
         let r1 = runner("release 9.2.0");
         let r2 = runner("release 9.3.0");
-        assert_eq!(sync_fingerprint(&specs, &pv, &r1), sync_fingerprint(&specs, &pv, &r1));
-        assert_ne!(sync_fingerprint(&specs, &pv, &r1), sync_fingerprint(&specs, &pv, &r2));
+        assert_eq!(
+            sync_fingerprint(&specs, &pv, &r1),
+            sync_fingerprint(&specs, &pv, &r1)
+        );
+        assert_ne!(
+            sync_fingerprint(&specs, &pv, &r1),
+            sync_fingerprint(&specs, &pv, &r2)
+        );
     }
 }

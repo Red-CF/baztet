@@ -250,7 +250,7 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
     use quick_xml::events::Event;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == b"testcase" => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "testcase" => {
                 in_case = true;
                 current = TestCase {
                     class_name: String::new(),
@@ -262,19 +262,19 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 current_failure = None;
                 for attr in e.attributes().flatten() {
                     match attr.key.as_ref() {
-                        b"classname" => {
+                        "classname" => {
                             current.class_name = attr
                                 .normalized_value(XML_VERSION)
                                 .unwrap_or_default()
                                 .into_owned()
                         }
-                        b"name" => {
+                        "name" => {
                             current.name = attr
                                 .normalized_value(XML_VERSION)
                                 .unwrap_or_default()
                                 .into_owned()
                         }
-                        b"time" => {
+                        "time" => {
                             current.duration_seconds = attr
                                 .normalized_value(XML_VERSION)
                                 .unwrap_or_default()
@@ -286,10 +286,9 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 }
             }
             Ok(Event::Start(e))
-                if in_case
-                    && (e.name().as_ref() == b"failure" || e.name().as_ref() == b"error") =>
+                if in_case && (e.name().as_ref() == "failure" || e.name().as_ref() == "error") =>
             {
-                current.status = if e.name().as_ref() == b"failure" {
+                current.status = if e.name().as_ref() == "failure" {
                     TestCaseStatus::Failed
                 } else {
                     TestCaseStatus::Error
@@ -297,7 +296,7 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 if let Some(attr) = e
                     .attributes()
                     .flatten()
-                    .find(|a| a.key.as_ref() == b"message")
+                    .find(|a| a.key.as_ref() == "message")
                 {
                     current_failure = Some(
                         attr.normalized_value(XML_VERSION)
@@ -307,10 +306,9 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 }
             }
             Ok(Event::Empty(e))
-                if in_case
-                    && (e.name().as_ref() == b"failure" || e.name().as_ref() == b"error") =>
+                if in_case && (e.name().as_ref() == "failure" || e.name().as_ref() == "error") =>
             {
-                current.status = if e.name().as_ref() == b"failure" {
+                current.status = if e.name().as_ref() == "failure" {
                     TestCaseStatus::Failed
                 } else {
                     TestCaseStatus::Error
@@ -318,7 +316,7 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 if let Some(attr) = e
                     .attributes()
                     .flatten()
-                    .find(|a| a.key.as_ref() == b"message")
+                    .find(|a| a.key.as_ref() == "message")
                 {
                     current_failure = Some(
                         attr.normalized_value(XML_VERSION)
@@ -327,10 +325,10 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                     );
                 }
             }
-            Ok(Event::Empty(e)) if in_case && e.name().as_ref() == b"skipped" => {
+            Ok(Event::Empty(e)) if in_case && e.name().as_ref() == "skipped" => {
                 current.status = TestCaseStatus::Skipped;
             }
-            Ok(Event::Empty(e)) if e.name().as_ref() == b"testcase" => {
+            Ok(Event::Empty(e)) if e.name().as_ref() == "testcase" => {
                 // self-closing testcase: passed, attributes only
                 let mut case = TestCase {
                     class_name: String::new(),
@@ -341,19 +339,19 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 };
                 for attr in e.attributes().flatten() {
                     match attr.key.as_ref() {
-                        b"classname" => {
+                        "classname" => {
                             case.class_name = attr
                                 .normalized_value(XML_VERSION)
                                 .unwrap_or_default()
                                 .into_owned()
                         }
-                        b"name" => {
+                        "name" => {
                             case.name = attr
                                 .normalized_value(XML_VERSION)
                                 .unwrap_or_default()
                                 .into_owned()
                         }
-                        b"time" => {
+                        "time" => {
                             case.duration_seconds = attr
                                 .normalized_value(XML_VERSION)
                                 .unwrap_or_default()
@@ -365,7 +363,7 @@ pub fn parse_test_xml(bytes: &[u8]) -> Vec<TestCase> {
                 }
                 cases.push(case);
             }
-            Ok(Event::End(e)) if e.name().as_ref() == b"testcase" => {
+            Ok(Event::End(e)) if e.name().as_ref() == "testcase" => {
                 current.message = current_failure.take();
                 cases.push(current.clone());
                 in_case = false;
@@ -406,8 +404,8 @@ pub fn parse_recipe(xml: &str) -> Option<Recipe> {
         let ev = reader.read_event().ok()?;
         match ev {
             Event::Start(e) => match e.name().as_ref() {
-                b"configuration" => {
-                    if let Some(attr) = e.attributes().flatten().find(|a| a.key.as_ref() == b"name")
+                "configuration" => {
+                    if let Some(attr) = e.attributes().flatten().find(|a| a.key.as_ref() == "name")
                     {
                         recipe.name = attr
                             .normalized_value(XML_VERSION)
@@ -415,12 +413,12 @@ pub fn parse_recipe(xml: &str) -> Option<Recipe> {
                             .into_owned();
                     }
                 }
-                b"blaze-settings" => {
+                "blaze-settings" => {
                     in_blaze = true;
                     if let Some(attr) = e
                         .attributes()
                         .flatten()
-                        .find(|a| a.key.as_ref() == b"blaze-command")
+                        .find(|a| a.key.as_ref() == "blaze-command")
                     {
                         recipe.command = attr
                             .normalized_value(XML_VERSION)
@@ -428,22 +426,22 @@ pub fn parse_recipe(xml: &str) -> Option<Recipe> {
                             .into_owned();
                     }
                 }
-                b"env_state" => in_envs = true,
-                b"env" if in_envs => {
+                "env_state" => in_envs = true,
+                "env" if in_envs => {
                     let (name, value) = env_entry(&e);
                     recipe.env.insert(name, value);
                 }
                 _ => {}
             },
             Event::Empty(e) => {
-                if in_envs && e.name().as_ref() == b"env" {
+                if in_envs && e.name().as_ref() == "env" {
                     let (name, value) = env_entry(&e);
                     recipe.env.insert(name, value);
                 }
             }
             Event::Text(t) => {
                 if in_blaze && !in_envs {
-                    let text = t.xml_content(XML_VERSION).unwrap_or_default().to_string();
+                    let text = t.xml_content(XML_VERSION).into_owned();
                     if text.contains("//") {
                         recipe.target = text;
                     }
@@ -464,13 +462,13 @@ fn env_entry(e: &quick_xml::events::BytesStart) -> (String, String) {
     let mut value = String::new();
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
-            b"name" => {
+            "name" => {
                 name = attr
                     .normalized_value(XML_VERSION)
                     .unwrap_or_default()
                     .into_owned()
             }
-            b"value" => {
+            "value" => {
                 value = attr
                     .normalized_value(XML_VERSION)
                     .unwrap_or_default()

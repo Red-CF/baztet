@@ -158,8 +158,8 @@ async fn query_batch_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baztet_protos::blaze_query::Attribute;
     use baztet_protos::blaze_query::target::Discriminator;
+    use baztet_protos::blaze_query::Attribute;
 
     fn rule_target(name: &str, inputs: &[&str], srcs: &[&str]) -> blaze_query::Target {
         let mut r = blaze_query::Rule {

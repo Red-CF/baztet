@@ -47,12 +47,10 @@ fn test_status_colored(status: &str) -> String {
     // pads against escape bytes, not visible width; style after padding and
     // gate on the stream support
     format!("{status:>8}")
-        .if_supports_color(Stream::Stdout, |t| {
-            match status {
-                "PASSED" => t.bright_green().to_string(),
-                "FAILED" => t.bright_red().to_string(),
-                _ => t.bright_yellow().to_string(),
-            }
+        .if_supports_color(Stream::Stdout, |t| match status {
+            "PASSED" => t.bright_green().to_string(),
+            "FAILED" => t.bright_red().to_string(),
+            _ => t.bright_yellow().to_string(),
         })
         .to_string()
 }
