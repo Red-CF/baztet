@@ -1,9 +1,11 @@
 //! Execution: build/test/run/coverage with ExecuteService-contract flag construction, BEP sidecars beside live console output, and junit test.xml parsing.
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::process::Stdio;
 
 use baztet_bep::{BepError, BepOutput};
+use tokio::io::AsyncReadExt;
 
 /// bazel junit test.xml files are XML 1.0; quick-xml 0.41 normalizes
 /// attribute/text values per XML version.
@@ -43,13 +45,46 @@ pub struct ExecSpec {
 pub struct ExecResult {
     pub code: i32,
     pub bep: Option<BepOutput>,
+    /// bazel's raw console output, captured only in quiet mode
+    /// (`BazelRunner::quiet` or the TUI) so the CLI can post-process it.
+    pub output: Option<ExecCapture>,
+    /// wall-clock time of the bazel command
+    pub secs: f64,
+}
+
+/// Captured bazel stdout/stderr; present only when output was captured.
+#[derive(Debug, Clone, Default)]
+pub struct ExecCapture {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Warning lines extracted from a captured run, deduped, stdout first.
+/// O(matches) memory: never materializes the full console output.
+pub fn warn_lines(capture: &ExecCapture) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for stream in [&capture.stdout, &capture.stderr] {
+        let text = String::from_utf8_lossy(stream);
+        for line in text.lines() {
+            if !line.trim().is_empty()
+                && line.to_ascii_lowercase().contains("warning")
+                && seen.insert(line.to_string())
+            {
+                out.push(line.to_string());
+            }
+        }
+    }
+    out
 }
 
 pub const BUILD_TAG_FILTERS: &str = "--build_tag_filters=-no-ide";
 
-fn common_flags(argv: &mut Vec<String>) {
+fn common_flags(argv: &mut Vec<String>, plain: bool) {
     argv.push("--tool_tag=baztet".to_string());
-    argv.push("--color=yes".to_string());
+    // captured runs post-process the output, so keep it color-free instead
+    // of pushing both flags and relying on last-occurrence-wins
+    argv.push(if plain { "--color=no" } else { "--color=yes" }.to_string());
     argv.push("--curses=no".to_string());
     argv.push(BUILD_TAG_FILTERS.to_string());
 }
@@ -83,7 +118,7 @@ impl BazelRunner {
             return Err(BazelError::Other("`run` takes exactly one target".into()).into());
         }
         let mut argv: Vec<String> = vec![];
-        common_flags(&mut argv);
+        common_flags(&mut argv, false);
         argv.extend(pv.build_flags.iter().cloned());
         let bep_file = temp_bep_file();
         // BEP flags BEFORE the label: postpositional args go to the binary
@@ -109,6 +144,7 @@ impl BazelRunner {
         Ok(ExecResult {
             code: status.code().unwrap_or(-1),
             bep: Some(bep),
+            ..Default::default()
         })
     }
 
@@ -118,7 +154,18 @@ impl BazelRunner {
         pv: &ProjectView,
         spec: &ExecSpec,
     ) -> Result<ExecResult, ExecError> {
-        self.exec_with_bep("test", pv, spec, |argv| {
+        let child = self.exec_test_fork(pv, spec, self.quiet).await?;
+        child.wait_with_ui(self.quiet).await
+    }
+
+    /// `bazel test` forked without waiting: the TUI polls the live BEP.
+    pub async fn exec_test_fork(
+        &self,
+        pv: &ProjectView,
+        spec: &ExecSpec,
+        capture: bool,
+    ) -> Result<ExecChild, ExecError> {
+        self.exec_fork("test", pv, spec, capture, |argv| {
             argv.extend(pv.test_flags.iter().cloned());
             if let Some(filter) = &spec.test_filter {
                 argv.push(format!("--test_filter={filter}"));
@@ -150,14 +197,33 @@ impl BazelRunner {
         spec: &ExecSpec,
         extra_flags: impl FnOnce(&mut Vec<String>) -> Result<(), BazelError>,
     ) -> Result<ExecResult, ExecError> {
+        let child = self
+            .exec_fork(command, _pv, spec, self.quiet, extra_flags)
+            .await?;
+        child.wait_with_ui(self.quiet).await
+    }
+
+    /// Spawn one exec command; the caller decides how to wait on it
+    /// (plain [`ExecChild::wait`], live BEP polling for the TUI, ...).
+    pub async fn exec_fork(
+        &self,
+        command: &str,
+        _pv: &ProjectView,
+        spec: &ExecSpec,
+        capture: bool,
+        extra_flags: impl FnOnce(&mut Vec<String>) -> Result<(), BazelError>,
+    ) -> Result<ExecChild, ExecError> {
         if spec.labels.is_empty() {
             return Err(BazelError::Other("no targets given".into()).into());
         }
         let bep_file = temp_bep_file();
         let mut argv: Vec<String> = vec![];
-        common_flags(&mut argv);
+        let quiet = capture;
+        // plain text while captured, so the failure dump stays readable
+        let plain = quiet;
+        common_flags(&mut argv, plain);
         if command == "coverage" {
-            argv.retain(|a| a != BUILD_TAG_FILTERS);
+            argv.retain(|a| *a != BUILD_TAG_FILTERS);
         }
         extra_flags(&mut argv)?;
         bep_flags(&bep_file, &mut argv);
@@ -169,22 +235,145 @@ impl BazelRunner {
             .arg(command) // startup options come after the command, we have none
             .args(argv)
             .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        if quiet {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        } else {
+            cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        }
         cmd.envs(&spec.env);
         if !self.tuning_flags.is_empty() {
             cmd.args(&self.tuning_flags);
         }
-        let status = cmd.spawn()?.wait().await?;
+        let started = std::time::Instant::now();
+        let mut child = cmd.spawn()?;
 
-        let bep = read_bep_or_none(&bep_file)?;
-        let code = status.code().unwrap_or(-1);
+        // drain the pipes while bazel runs: a 64 KiB OS buffer fills on any
+        // build of real size and waiting on both processes deadlocks
+        let (out_task, err_task) =
+            if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
+                (
+                    Some(tokio::spawn(drain(out))),
+                    Some(tokio::spawn(drain(err))),
+                )
+            } else {
+                (None, None)
+            };
+
+        Ok(ExecChild {
+            command: command.to_string(),
+            child: Some(child),
+            bep_file,
+            captured: quiet,
+            out_task,
+            err_task,
+            started,
+        })
+    }
+}
+
+/// drain one piped stream, keeping only the last `DRAIN_CAP` bytes:
+/// presentation shows warnings + a failure tail, and buffering a
+/// pathological build's full console output would OOM the CLI
+async fn drain<S: tokio::io::AsyncRead + Unpin>(mut stream: S) -> Vec<u8> {
+    const DRAIN_CAP: usize = 256 * 1024;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match stream.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > DRAIN_CAP * 2 {
+                    buf.drain(..buf.len() - DRAIN_CAP);
+                }
+            }
+        }
+    }
+    buf
+}
+
+/// One spawned bazel exec command: call [`ExecChild::wait`] for the
+/// result, or poll [`ExecChild::bep_path`] while it runs (live TUI).
+pub struct ExecChild {
+    command: String,
+    child: Option<tokio::process::Child>,
+    bep_file: std::path::PathBuf,
+    captured: bool,
+    out_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    err_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    started: std::time::Instant,
+}
+
+impl ExecChild {
+    /// Path bazel streams the Build Event Protocol to while running;
+    /// incomplete at any instant, so re-parse failures are normal.
+    pub fn bep_path(&self) -> &std::path::Path {
+        &self.bep_file
+    }
+
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Parse the BEP sidecar as bazel writes it. None when the file is
+    /// absent or mid-write: a truncated tail fails to parse, and the
+    /// caller keeps its previous snapshot.
+    pub fn live_bep_snapshot(path: &std::path::Path) -> Option<BepOutput> {
+        let bytes = std::fs::read(path).ok()?;
+        baztet_bep::parse(&bytes).ok()
+    }
+
+    /// Final blocking wait that consumes the spawned command and returns
+    /// the full result. The TUI's live-completion check is instead
+    /// `JoinHandle::is_finished` while the waiter task holds this.
+    pub async fn wait(mut self) -> Result<ExecResult, ExecError> {
+        let Some(mut child) = self.child.take() else {
+            return Err(BazelError::Other("child already taken".into()).into());
+        };
+        let status = child.wait().await?;
+        let stdout = match self.out_task.take() {
+            Some(t) => t.await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let stderr = match self.err_task.take() {
+            Some(t) => t.await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let bep = read_bep_or_none(&self.bep_file)?;
         Ok(ExecResult {
-            code,
+            code: status.code().unwrap_or(-1),
+            secs: self.started.elapsed().as_secs_f64(),
+            output: self.captured.then_some(ExecCapture { stdout, stderr }),
             bep: Some(bep),
         })
     }
+
+    /// Wait with the Bastet spinner when the output is captured on a live
+    /// terminal; plain wait otherwise.
+    pub async fn wait_with_ui(self, ui: bool) -> Result<ExecResult, ExecError> {
+        if !ui || !std::io::stderr().is_terminal() {
+            return self.wait().await;
+        }
+        let bar = cat_spinner(&self.command);
+        let result = self.wait().await;
+        bar.finish_and_clear();
+        result
+    }
+}
+
+/// `baztet build` — a cat mid-pounce; steady tick drives it while bazel runs.
+fn cat_spinner(command: &str) -> indicatif::ProgressBar {
+    const FRAMES: &[&str] = &[" ( ^ω^ )ฅ", " (=^ω^=) ", " ₍^ω^₎ ", "ฅ( ^ω^ ) "];
+    let bar = indicatif::ProgressBar::new_spinner();
+    bar.enable_steady_tick(std::time::Duration::from_millis(120));
+    bar.set_style(
+        indicatif::ProgressStyle::with_template("{spinner} {msg} · {elapsed}")
+            .expect("static spinner template")
+            .tick_strings(FRAMES),
+    );
+    bar.set_message(format!("baztet {command}"));
+    bar
 }
 
 fn temp_bep_file() -> std::path::PathBuf {
@@ -519,6 +708,28 @@ fn group_by_label(bep: &BepOutput) -> Vec<(String, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warn_lines_dedupe_and_match_both_streams() {
+        let capture = ExecCapture {
+            stdout: b"Compiling...\nWARNING: deprecation in ::a\nCompiling B\n".to_vec(),
+            stderr: b"warning: unused variable\nWARNING: deprecation in ::a\n".to_vec(),
+        };
+        let warns = warn_lines(&capture);
+        assert_eq!(
+            warns,
+            ["WARNING: deprecation in ::a", "warning: unused variable"]
+        );
+    }
+
+    #[test]
+    fn warn_lines_rejects_noise_and_blank() {
+        let capture = ExecCapture {
+            stdout: b"https://x.com/progress\n   \nwarning: only\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(warn_lines(&capture), ["warning: only"]);
+    }
 
     const JUNIT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="com.x.A" tests="3" failures="1" errors="0">

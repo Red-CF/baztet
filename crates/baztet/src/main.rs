@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 #[global_allocator]
@@ -7,6 +8,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use baztet_core::{sync as sync_engine, BazelError, BazelRunner};
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+
+mod tui;
 
 // stderr presentation; --json and machine outputs stay untouched
 
@@ -90,6 +93,11 @@ struct Cli {
     #[arg(long, global = true)]
     no_output_check: bool,
 
+    /// stream bazel's raw console output instead of the quiet summary
+    /// (quiet mode captures it, shows warnings, and dumps errors on failure)
+    #[arg(long, global = true)]
+    raw: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -133,6 +141,9 @@ enum Command {
         /// print a machine-readable report to stdout
         #[arg(long)]
         json: bool,
+        /// live per-target dashboard over the running tests (alt screen)
+        #[arg(long)]
+        tui: bool,
         #[arg(last = true)]
         passthrough: Vec<String>,
     },
@@ -186,6 +197,10 @@ enum Command {
         #[arg(long, short = 'r')]
         transitive: bool,
     },
+    /// Passthrough: any unrecognized `baztet <cmd> [args...]` runs bazel
+    /// directly in the discovered workspace (drop-in replacement).
+    #[command(external_subcommand)]
+    Bazel(Vec<String>),
 }
 
 fn main() -> ExitCode {
@@ -219,6 +234,44 @@ async fn async_main(cli: &Cli) -> ExitCode {
 
 fn exit_code(code: i32) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
+}
+
+/// passthrough: `baztet <anything-not-a-baztet-command>` = bazel with the
+/// same args, in the discovered workspace, streamed. --raw-ish by design.
+async fn exec_bazel_passthrough(cli: &Cli, args: Vec<String>) -> anyhow::Result<ExitCode> {
+    let ws = workspace_of(cli)?;
+    // same binary chain every other command uses; a PV parse failure does
+    // not block the escape hatch
+    let binary = match &cli.bazel {
+        Some(b) => b.clone(),
+        None => baztet_core::workspace::find_project_view(&ws)
+            .and_then(|p| parse_pv_soft(&p, &ws).map(|pv| pv.bazel_binary().to_owned()))
+            .unwrap_or_else(|| "bazel".to_string()),
+    };
+    eprintln!(
+        "[baztet] '{}' is not a baztet command; running bazel directly",
+        args.first().map(String::as_str).unwrap_or("")
+    );
+    let mut cmd = tokio::process::Command::new(&binary)
+        .current_dir(&ws)
+        .args(args)
+        .kill_on_drop(true)
+        .spawn()?;
+    let status = cmd.wait().await?;
+    Ok(exit_code(status.code().unwrap_or(-1)))
+}
+
+/// Parse a project view for binary resolution; None when it is missing or
+/// unparseable (a generated BSP view with unresolvable imports must not
+/// break every command; full parse errors surface where the PV matters).
+fn parse_pv_soft(path: &Utf8PathBuf, ws: &Utf8PathBuf) -> Option<baztet_projectview::ProjectView> {
+    match baztet_projectview::parse(path, ws) {
+        Ok(pv) => Some(pv),
+        Err(e) => {
+            eprintln!("[baztet] project view at {path} unparseable ({e}); using defaults");
+            None
+        }
+    }
 }
 
 async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
@@ -273,13 +326,21 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     match &cli.command {
         Command::Sync { json, fresh, fast } => {
             let runner = runner_for(cli, true).await?;
-            let pv_path = cli
-                .project_view
-                .clone()
-                .unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
-            if !pv_path.is_file() {
-                anyhow::bail!("project view not found at {pv_path}");
-            }
+            let pv_path = match &cli.project_view {
+                Some(p) => {
+                    if !p.is_file() {
+                        anyhow::bail!("project view not found at {p}");
+                    }
+                    p.clone()
+                }
+                None => baztet_core::workspace::find_project_view(&runner.workspace_root)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no project view; tried {}. create one, or pass --project-view",
+                            baztet_core::workspace::PV_CANDIDATES.join(", ")
+                        )
+                    })?,
+            };
             let pv = baztet_projectview::parse(&pv_path, &runner.workspace_root)?;
             let report = sync_engine::sync(&runner, &pv, !fast, *fresh).await?;
             let snapshot = &report.snapshot;
@@ -342,6 +403,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     &spec(labels.clone(), passthrough.clone()),
                 )
                 .await?;
+            present_exec("build", &result, true);
             Ok(exit_for("build", result.code))
         }
         Command::Test {
@@ -350,14 +412,29 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             pattern,
             cases,
             json,
+            tui,
             passthrough,
         } => {
             let runner = runner_for(cli, false).await?;
             let snapshot = load_snapshot(workspace_of(cli)?)?;
             let labels = test_labels(&snapshot, labels, pattern)?;
-            let mut spec = spec(labels, passthrough.clone());
+            let mut spec = spec(labels.clone(), passthrough.clone());
             spec.test_filter = filter.clone();
-            let result = runner.exec_test(&load_pv(&runner, None)?, &spec).await?;
+            let result = match (*tui, std::io::stdout().is_terminal()) {
+                (true, true) => {
+                    let child = runner
+                        .exec_test_fork(&load_pv(&runner, None)?, &spec, true)
+                        .await?;
+                    tui::run_test(child, labels.clone()).await?
+                }
+                // --tui without a tty (pipe, CI): fall back to the quiet capture
+                (true, false) => {
+                    eprintln!("[baztet] --tui needs a terminal; running quietly");
+                    runner.exec_test(&load_pv(&runner, None)?, &spec).await?
+                }
+                (false, _) => runner.exec_test(&load_pv(&runner, None)?, &spec).await?,
+            };
+            present_exec("test", &result, false);
 
             let bep = result
                 .bep
@@ -463,6 +540,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     &spec(labels.clone(), passthrough.clone()),
                 )
                 .await?;
+            present_exec("coverage", &result, true);
             if let Some(bep) = result.bep.as_ref() {
                 // lcov merged report referenced in BEP build tool logs / outputs
                 let merged: Vec<_> = bep
@@ -531,9 +609,11 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
                     if recipe.command == "test" {
                         // acceptance/unit recipes run their target; no extra filter
                         let result = runner.exec_test(&pv, &spec).await?;
+                        present_exec("test", &result, false);
                         Ok(exit_for("test", result.code))
                     } else if recipe.command == "build" {
                         let result = runner.exec_build(&pv, &spec).await?;
+                        present_exec("build", &result, true);
                         Ok(exit_for("build", result.code))
                     } else if recipe.command == "run" {
                         spec.extra_args.push("--single_top_level_target".into());
@@ -573,10 +653,13 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             let ws = workspace_of(cli)?;
             writeln!(report, "workspace: {ws}")?;
             // project view
-            let pv_path = ws.join(".bazelproject");
-            match pv_path.is_file() {
-                true => writeln!(report, "project view: {pv_path}")?,
-                false => writeln!(report, "project view: not present (scoped views elsewhere)")?,
+            match baztet_core::workspace::find_project_view(&ws) {
+                Some(pv_path) => writeln!(report, "project view: {pv_path}")?,
+                None => writeln!(
+                    report,
+                    "project view: not present (tried {})",
+                    baztet_core::workspace::PV_CANDIDATES.join(", ")
+                )?,
             }
             // snapshot
             match baztet_snapshot::Snapshot::load(&ws) {
@@ -700,6 +783,7 @@ async fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Bazel(args) => exec_bazel_passthrough(cli, args.clone()).await,
     }
 }
 
@@ -720,15 +804,21 @@ fn load_pv(
     runner: &BazelRunner,
     explicit: Option<&Utf8PathBuf>,
 ) -> anyhow::Result<baztet_projectview::ProjectView> {
-    let path = explicit
-        .cloned()
-        .unwrap_or_else(|| runner.workspace_root.join(".bazelproject"));
+    let path = explicit.cloned().unwrap_or_else(|| {
+        baztet_core::workspace::find_project_view(&runner.workspace_root)
+            .unwrap_or_else(|| runner.workspace_root.join(".bazelproject"))
+    });
     if !path.is_file() {
         if explicit.is_some() {
             anyhow::bail!("project view not found at {path}");
         }
         eprintln!("[baztet] no project view at {path}; running with default flags");
         return Ok(Default::default());
+    }
+    // discovered views degrade to defaults when unparseable; an explicit
+    // --project-view must fail loudly instead
+    if explicit.is_none() {
+        return Ok(parse_pv_soft(&path, &runner.workspace_root).unwrap_or_default());
     }
     Ok(baztet_projectview::parse(&path, &runner.workspace_root)?)
 }
@@ -750,7 +840,7 @@ fn load_snapshot(ws_root: Utf8PathBuf) -> anyhow::Result<baztet_snapshot::Snapsh
         .map_err(|e| anyhow::anyhow!("no snapshot under {ws_root}: {e} — run `baztet sync` first"))
 }
 
-/// Runner plus tuning flags (`--no-output-check`).
+/// Runner plus tuning flags (`--no-output-check`) and quiet mode.
 async fn runner_for(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     let mut runner = discover(cli, refresh).await?;
     if cli.no_output_check {
@@ -758,6 +848,7 @@ async fn runner_for(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
             .tuning_flags
             .push("--noexperimental_check_output_files".to_string());
     }
+    runner.quiet = !cli.raw;
     Ok(runner)
 }
 
@@ -769,16 +860,9 @@ async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     // --bazel wins; else the project view's `bazel_binary`; else `bazel`
     let binary = match &cli.bazel {
         Some(b) => b.clone(),
-        None => {
-            let pv_path = ws.join(".bazelproject");
-            if pv_path.is_file() {
-                baztet_projectview::parse(&pv_path, &ws)?
-                    .bazel_binary()
-                    .to_owned()
-            } else {
-                "bazel".to_string()
-            }
-        }
+        None => baztet_core::workspace::find_project_view(&ws)
+            .and_then(|p| parse_pv_soft(&p, &ws).map(|pv| pv.bazel_binary().to_owned()))
+            .unwrap_or_else(|| "bazel".to_string()),
     };
     if !refresh {
         if let Ok(snapshot) = baztet_snapshot::Snapshot::load(&ws) {
@@ -796,4 +880,45 @@ async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
         }
     }
     Ok(BazelRunner::discover(&binary, &ws).await?)
+}
+
+/// Post-process a captured exec run (`BazelRunner::quiet` or the TUI):
+/// warnings always surface, failures dump bazel's raw output. Uncaptured
+/// runs (`--raw`, `run`) already streamed everything; no-op there.
+/// `show_status=false` skips the ok/fail line (`test` prints its own
+/// verdict-driven summary and exit code 3 on failures, not bazel's).
+fn present_exec(command: &str, result: &baztet_core::exec::ExecResult, show_status: bool) {
+    let Some(out) = &result.output else {
+        return;
+    };
+    let warns = baztet_core::exec::warn_lines(out);
+    for w in warns.iter().take(30) {
+        warn(w);
+    }
+    if warns.len() > 30 {
+        warn(&format!(
+            "... {} more warning lines suppressed",
+            warns.len() - 30
+        ));
+    }
+    if result.code == 0 && show_status {
+        ok(&format!("{command} ok ({:.1}s)", result.secs));
+    }
+    if result.code != 0 && !show_status {
+        // exit 3 (failed verdicts) and its report belong to the caller
+        fail(&format!("bazel exited with code {}", result.code));
+    }
+    if result.code != 0 {
+        let raw = if out.stderr.is_empty() {
+            &out.stdout
+        } else {
+            &out.stderr
+        };
+        let text = String::from_utf8_lossy(raw);
+        let lines: Vec<&str> = text.lines().collect();
+        let tail = &lines[lines.len().saturating_sub(400)..];
+        for line in tail {
+            eprintln!("{line}");
+        }
+    }
 }

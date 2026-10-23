@@ -108,6 +108,12 @@ baztet targets  # browse the synced targets
 baztet doctor   # self-check: bazel, workspace, project view, snapshot, aspect
 ```
 
+No configuration is required: baztet auto-discovers the workspace by
+walking up from your current directory, and the project view among the
+known locations (`.bazelproject`, then the JetBrains BSP server's
+`.bazelbsp/.bazelproject`). `--workspace` / `--project-view` override
+either one; `baztet doctor` prints what it found.
+
 Then your daily flows:
 
 ```bash
@@ -115,16 +121,30 @@ baztet build [labels]                  # bazel build with your project view flag
 baztet test [labels]                   # BEP-driven results, junit case reports
 baztet test --pattern unit             # select tests by label substring
 baztet test --json                     # machine-readable report (targets + cases)
+baztet test --tui                      # live per-target dashboard (alt screen)
 baztet run LABEL                       # streamed output
 baztet coverage [labels]               # merged lcov report paths
 baztet recipes                         # your .bazel/*.xml run configs, imported
 baztet recipes --run "web unit tests"  # run one, with its env vars
 ```
 
-`baztet test` exits 3 when any test target did not pass (also FLAKY /
-CANCELLED / TIMEOUT, 0.2 semantics restored), 0 otherwise — for CI to gate
-on. `baztet targets --filter =java_library` selects by rule kind (the `=`
-prefix); plain filters match label substrings.
+Anything that is not a baztet command is passed straight through to
+bazel in the discovered workspace: `baztet cquery //pkg:...`,
+`baztet aquery ...` — baztet is a drop-in replacement, not a smaller
+language.
+
+## Output: quiet by default
+
+`build`/`test`/`coverage` capture bazel's console output and show signal
+instead of noise: a spinner while bazel works, every warning line after
+it finishes, and the raw error output only when something fails. A green
+build is one line. `--raw` restores full streaming; `run` stays
+interactive by definition.
+
+Exit codes keep their contract: `test` exits 3 when any test target did
+not pass (FLAKY / CANCELLED / TIMEOUT included), 0 otherwise — for CI to
+gate on. `baztet targets --filter =java_library` selects by rule kind (the
+`=` prefix); plain filters match label substrings.
 
 ## How sync stays fast
 
@@ -162,6 +182,8 @@ Useful flags:
   so warm builds skip its output-file freshness scan. Opt-in on purpose:
   Bazel trusts outputs that are present on disk, so run a checked build
   before publishing artifacts.
+- `--raw` (global): stream every command's bazel output live instead of
+  the quiet capture.
 
 ## Performance
 

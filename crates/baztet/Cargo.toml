@@ -15,6 +15,7 @@ baztet-core = { path = "../baztet-core", version = "1.0.0" }
 baztet-projectview = { path = "../baztet-projectview", version = "1.0.0" }
 baztet-snapshot = { path = "../baztet-snapshot", version = "1.0.0" }
 clap = { version = "4", features = ["derive", "env"] }
+ratatui.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 anyhow.workspace = true
 serde.workspace = true

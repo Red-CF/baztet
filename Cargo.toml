@@ -36,6 +36,7 @@ rayon = "1"
 mimalloc = "0.1"
 owo-colors = "4"
 indicatif = "0.17"
+ratatui = "0.29"
 
 [profile.release]
 lto = true
