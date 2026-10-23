@@ -87,16 +87,15 @@ pub async fn build_cmd(
 ) -> anyhow::Result<ExitCode> {
     let ctx = Ctx::exec(cli, false, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
+    let pending = labels.clone();
     let build_spec = spec(labels, passthrough);
-    let result = if std::io::stdout().is_terminal() && !cli.raw {
+    let result = if dashboard(cli) {
         // the dashboard is how a build runs on a terminal
-        let child = ctx.runner.exec_build_fork(ctx.pv(), &build_spec).await?;
-        tui::run(
-            tui::DashMode::Build,
-            child,
-            ctx.snapshot()?.specified_targets.clone(),
-        )
-        .await?
+        let child = ctx
+            .runner
+            .exec_build_fork(ctx.pv(), &build_spec, true)
+            .await?;
+        tui::run(tui::DashMode::Build, child, pending).await?
     } else {
         ctx.runner.exec_build(ctx.pv(), &build_spec).await?
     };
@@ -104,8 +103,6 @@ pub async fn build_cmd(
     Ok(exit_for("build", result.code))
 }
 
-// the mirror of clap's Test flags; grouping them would just restate them
-#[allow(clippy::too_many_arguments)]
 // the mirror of clap's Test flags; grouping them would just restate them
 #[allow(clippy::too_many_arguments)]
 pub async fn test_cmd(
@@ -123,15 +120,14 @@ pub async fn test_cmd(
     test_spec.test_filter = filter.clone();
     // the live dashboard is the only way `test` runs on a terminal; --raw
     // and non-tty callers (pipes, CI) get the quiet/raw capture instead
-    let result = match (std::io::stdout().is_terminal(), cli.raw) {
-        (true, false) => {
-            let child = ctx
-                .runner
-                .exec_test_fork(ctx.pv(), &test_spec, true)
-                .await?;
-            tui::run(tui::DashMode::Test, child, labels).await?
-        }
-        _ => ctx.runner.exec_test(ctx.pv(), &test_spec).await?,
+    let result = if dashboard(cli) {
+        let child = ctx
+            .runner
+            .exec_test_fork(ctx.pv(), &test_spec, true)
+            .await?;
+        tui::run(tui::DashMode::Test, child, labels).await?
+    } else {
+        ctx.runner.exec_test(ctx.pv(), &test_spec).await?
     };
     ui::present_exec("test", &result, false);
 
@@ -233,15 +229,14 @@ pub async fn coverage_cmd(
 ) -> anyhow::Result<ExitCode> {
     let ctx = Ctx::exec(cli, false, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
+    let pending = labels.clone();
     let cov_spec = spec(labels, passthrough);
-    let result = if std::io::stdout().is_terminal() && !cli.raw {
-        let child = ctx.runner.exec_coverage_fork(ctx.pv(), &cov_spec).await?;
-        tui::run(
-            tui::DashMode::Build,
-            child,
-            ctx.snapshot()?.specified_targets.clone(),
-        )
-        .await?
+    let result = if dashboard(cli) {
+        let child = ctx
+            .runner
+            .exec_coverage_fork(ctx.pv(), &cov_spec, true)
+            .await?;
+        tui::run(tui::DashMode::Build, child, pending).await?
     } else {
         ctx.runner.exec_coverage(ctx.pv(), &cov_spec).await?
     };
@@ -316,7 +311,7 @@ pub async fn recipes_cmd(cli: &Cli, run: Option<String>, json: bool) -> anyhow::
             };
             if recipe.command == "test" {
                 // acceptance/unit recipes run their target; no extra filter
-                let result = if std::io::stdout().is_terminal() && !cli.raw {
+                let result = if dashboard(cli) {
                     let child = runner.exec_test_fork(&pv, &exec_spec, true).await?;
                     tui::run(tui::DashMode::Test, child, exec_spec.labels.clone()).await?
                 } else {
@@ -325,8 +320,8 @@ pub async fn recipes_cmd(cli: &Cli, run: Option<String>, json: bool) -> anyhow::
                 ui::present_exec("test", &result, false);
                 Ok(exit_for("test", result.code))
             } else if recipe.command == "build" {
-                let result = if std::io::stdout().is_terminal() && !cli.raw {
-                    let child = runner.exec_build_fork(&pv, &exec_spec).await?;
+                let result = if dashboard(cli) {
+                    let child = runner.exec_build_fork(&pv, &exec_spec, true).await?;
                     tui::run(tui::DashMode::Build, child, exec_spec.labels.clone()).await?
                 } else {
                     runner.exec_build(&pv, &exec_spec).await?
@@ -473,4 +468,11 @@ pub async fn passthrough_cmd(cli: &Cli, args: Vec<String>) -> anyhow::Result<Exi
         .spawn()?;
     let status = cmd.wait().await?;
     Ok(exit_code(status.code().unwrap_or(-1)))
+}
+
+/// The dashboard decides itself: interactive stdout AND stdin (crossterm's
+/// event source), no --raw. Pipes/CI and wrappers with closed stdin get
+/// quiet capture; a piped stdin must never kill a build via its bytes.
+fn dashboard(cli: &Cli) -> bool {
+    !cli.raw && std::io::stdout().is_terminal() && std::io::stdin().is_terminal()
 }

@@ -102,17 +102,18 @@ impl BazelRunner {
         pv: &ProjectView,
         spec: &ExecSpec,
     ) -> Result<ExecResult, ExecError> {
-        let child = self.exec_build_fork(pv, spec).await?;
+        let child = self.exec_build_fork(pv, spec, self.quiet).await?;
         child.wait_with_ui(self.quiet).await
     }
 
-    /// `bazel build` forked without waiting: the dashboard polls the live BEP.
+    /// `bazel build` forked without waiting: the dashboard polls live console.
     pub async fn exec_build_fork(
         &self,
         pv: &ProjectView,
         spec: &ExecSpec,
+        capture: bool,
     ) -> Result<ExecChild, ExecError> {
-        self.exec_fork("build", pv, spec, true, |argv| {
+        self.exec_fork("build", pv, spec, capture, |argv| {
             argv.extend(pv.build_flags.iter().cloned());
             Ok(())
         })
@@ -192,7 +193,7 @@ impl BazelRunner {
         pv: &ProjectView,
         spec: &ExecSpec,
     ) -> Result<ExecResult, ExecError> {
-        let child = self.exec_coverage_fork(pv, spec).await?;
+        let child = self.exec_coverage_fork(pv, spec, self.quiet).await?;
         child.wait_with_ui(self.quiet).await
     }
 
@@ -201,8 +202,9 @@ impl BazelRunner {
         &self,
         pv: &ProjectView,
         spec: &ExecSpec,
+        capture: bool,
     ) -> Result<ExecChild, ExecError> {
-        self.exec_fork("coverage", pv, spec, true, |argv| {
+        self.exec_fork("coverage", pv, spec, capture, |argv| {
             argv.extend(pv.build_flags.iter().cloned());
             argv.push("--combined_report=lcov".to_string());
             Ok(())
@@ -256,11 +258,12 @@ impl BazelRunner {
 
         // drain the pipes while bazel runs: a 64 KiB OS buffer fills on any
         // build of real size and waiting on both processes deadlocks
+        let console = ConsoleCapture::new();
         let (out_task, err_task) =
             if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
                 (
-                    Some(tokio::spawn(drain(out))),
-                    Some(tokio::spawn(drain(err))),
+                    Some(tokio::spawn(drain(out, console.clone()))),
+                    Some(tokio::spawn(drain(err, console.clone()))),
                 )
             } else {
                 (None, None)
@@ -271,6 +274,7 @@ impl BazelRunner {
             child: Some(child),
             bep_file,
             captured: capture,
+            console,
             out_task,
             err_task,
             started,
@@ -278,26 +282,59 @@ impl BazelRunner {
     }
 }
 
-/// drain one piped stream, keeping a bounded tail (the buffer sits
-/// between `DRAIN_CAP` and `2×DRAIN_CAP` between trims): presentation
-/// shows warnings + a failure tail, and buffering a pathological build's
-/// full console output would OOM the CLI
-async fn drain<S: tokio::io::AsyncRead + Unpin>(mut stream: S) -> Vec<u8> {
+/// Live console capture: the drain writes here as bazel runs; the dashboard
+/// reads progress from it and the post-run presentation reads the failure
+/// tail. Bazel buffers the BEP sidecar and writes it whole at exit, so this
+/// — not the sidecar — is the only streaming data source.
+#[derive(Clone, Default)]
+pub struct ConsoleCapture {
+    inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+}
+impl ConsoleCapture {
+    fn new() -> Self {
+        Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+    fn append(&self, chunk: &[u8], cap: usize) {
+        let mut buf = self.inner.lock().unwrap();
+        buf.extend_from_slice(chunk);
+        if buf.len() > cap * 2 {
+            // keep the tail at a line boundary (never split mid-line or a
+            // UTF-8 char in the presented dump)
+            let cut = buf.len() - cap;
+            let cut = buf[cut..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|p| buf.len() - cap + p + 1)
+                .unwrap_or(cut);
+            buf.drain(..cut);
+        }
+    }
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.inner.lock().unwrap()).into_owned()
+    }
+    /// The most recent non-empty bazel progress line.
+    pub fn last_progress(&self) -> String {
+        String::from_utf8_lossy(&self.inner.lock().unwrap())
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty() && !l.contains("Computing main repo mapping"))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    }
+}
+
+async fn drain<S: tokio::io::AsyncRead + Unpin>(mut stream: S, dst: ConsoleCapture) {
     const DRAIN_CAP: usize = 256 * 1024;
-    let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
         match stream.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.len() > DRAIN_CAP * 2 {
-                    buf.drain(..buf.len() - DRAIN_CAP);
-                }
-            }
+            Ok(n) => dst.append(&chunk[..n], DRAIN_CAP),
         }
     }
-    buf
 }
 
 /// One spawned bazel exec command: call [`ExecChild::wait`] for the
@@ -307,8 +344,10 @@ pub struct ExecChild {
     child: Option<tokio::process::Child>,
     bep_file: std::path::PathBuf,
     captured: bool,
-    out_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
-    err_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    /// live console, written by the drain tasks as bazel runs
+    console: ConsoleCapture,
+    out_task: Option<tokio::task::JoinHandle<()>>,
+    err_task: Option<tokio::task::JoinHandle<()>>,
     started: std::time::Instant,
 }
 
@@ -323,12 +362,10 @@ impl ExecChild {
         &self.command
     }
 
-    /// Parse the BEP sidecar as bazel writes it. None when the file is
-    /// absent or mid-write: a truncated tail fails to parse, and the
-    /// caller keeps its previous snapshot.
-    pub fn live_bep_snapshot(path: &std::path::Path) -> Option<BepOutput> {
-        let bytes = std::fs::read(path).ok()?;
-        baztet_bep::parse(&bytes).ok()
+    /// Handle to the live console for dashboard progress; clone it before
+    /// moving `self` into the waiting task.
+    pub fn console_handle(&self) -> ConsoleCapture {
+        self.console.clone()
     }
 
     /// Final blocking wait that consumes the spawned command and returns
@@ -342,19 +379,25 @@ impl ExecChild {
         // a panicked drain task must not surface as silent empty output
         let join_err =
             |e: tokio::task::JoinError| BazelError::Other(format!("console capture failed: {e}"));
-        let stdout = match self.out_task.take() {
-            Some(t) => t.await.map_err(join_err)?,
-            None => Vec::new(),
-        };
-        let stderr = match self.err_task.take() {
-            Some(t) => t.await.map_err(join_err)?,
-            None => Vec::new(),
-        };
+        if let Some(t) = self.out_task.take() {
+            t.await.map_err(join_err)?;
+        }
+        if let Some(t) = self.err_task.take() {
+            t.await.map_err(join_err)?;
+        }
         let bep = read_bep_or_none(&self.bep_file)?;
         Ok(ExecResult {
             code: status.code().unwrap_or(-1),
             secs: self.started.elapsed().as_secs_f64(),
-            output: self.captured.then_some(ExecCapture { stdout, stderr }),
+            output: self.captured.then(|| {
+                let text = self.console.text();
+                // the two streams interleaved into one tail; presentation
+                // works on lines, warnings and failure dump alike
+                ExecCapture {
+                    stdout: text.into_bytes(),
+                    stderr: Vec::new(),
+                }
+            }),
             bep: Some(bep),
         })
     }

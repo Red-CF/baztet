@@ -61,6 +61,9 @@ impl TuiTerminal {
     ) -> anyhow::Result<ExecResult> {
         let started = Instant::now();
         let bep_path = child.bep_path().to_owned();
+        // clone before the move: the dashboard's live progress lives in the
+        // console capture, and the waiter task consumes the ExecChild
+        let console = child.console_handle();
         // Option: awaiting consumes the handle; ownership back-checks the
         // early-abort path in the loop below
         let mut waiter = Some(tokio::spawn(async move {
@@ -73,76 +76,77 @@ impl TuiTerminal {
         // kill_on_drop terminates bazel
         let outcome: anyhow::Result<ExecResult> = loop {
             if waiter.as_ref().unwrap().is_finished() {
-                break match waiter.take().unwrap().await {
+                // the waiter's wait() already read and deleted the sidecar;
+                // the completed verdicts are in the result's BEP output —
+                // draw this final frame so the dashboard closes showing the
+                // run's state, not a mid-run one
+                let result = match waiter.take().unwrap().await {
                     Ok(Ok(res)) => Ok(res),
                     Ok(Err(e)) => Err(e),
                     Err(e) => Err(e.into()),
                 };
-            }
-            match crossterm::event::poll(Duration::from_millis(200)) {
-                Ok(_) => {}
-                Err(e) => break Err(e.into()),
-            }
-            match crossterm::event::read() {
-                Ok(crossterm::event::Event::Key(k)) => {
-                    let quit = k.kind == crossterm::event::KeyEventKind::Press
-                        && (k.code == crossterm::event::KeyCode::Char('q')
-                            || (k
-                                .modifiers
-                                .contains(crossterm::event::KeyModifiers::CONTROL)
-                                && k.code == crossterm::event::KeyCode::Char('c')));
-                    if quit {
-                        // capture what bazel wrote so far, then kill it
-                        waiter.as_ref().unwrap().abort();
-                        // final incremental pass: whatever bazel wrote so far
-                        if let Ok(mut f) = std::fs::File::open(&bep_path) {
-                            use std::io::Seek;
-                            if f.seek(std::io::SeekFrom::Start(offset as u64)).is_ok() {
-                                let mut buf = Vec::new();
-                                if f.read_to_end(&mut buf).is_ok() {
-                                    if let Ok((delta, _)) =
-                                        baztet_core::baztet_bep::parse_prefix(&buf, 0)
-                                    {
-                                        state.extend(delta);
-                                    }
-                                }
-                            }
-                        }
-                        break Ok(ExecResult {
-                            code: 130,
-                            bep: Some(state),
-                            ..Default::default()
-                        });
+                if let Ok(res) = &result {
+                    if let Some(bep) = &res.bep {
+                        state = bep.clone();
                     }
                 }
-                Ok(_) => {}
-                Err(e) => break Err(e.into()),
+                let _ = draw(
+                    &mut self.terminal,
+                    mode,
+                    &state,
+                    pending.len(),
+                    started.elapsed(),
+                    &console,
+                );
+                break result;
             }
-            // incremental: read only appended bytes and decode only new
-            // frames (O(delta) per tick, no whole-file re-parse)
-            match std::fs::File::open(&bep_path) {
-                Ok(mut f) => {
-                    use std::io::{Seek, SeekFrom};
-                    if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
-                        let mut buf = Vec::new();
-                        if f.read_to_end(&mut buf).is_ok() {
-                            if let Ok((delta, consumed)) =
-                                baztet_core::baztet_bep::parse_prefix(&buf, 0)
-                            {
-                                offset += consumed;
-                                state.extend(delta);
+            // read only when poll says an event is ready: a bare read blocks
+            // forever when no key was pressed, freezing the whole draw loop
+            let key_ready = match crossterm::event::poll(Duration::from_millis(200)) {
+                Ok(ready) => ready,
+                Err(e) => break Err(e.into()),
+            };
+            if key_ready {
+                match crossterm::event::read() {
+                    Ok(crossterm::event::Event::Key(k)) => {
+                        let quit = k.kind == crossterm::event::KeyEventKind::Press
+                            && (k.code == crossterm::event::KeyCode::Char('q')
+                                || (k
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL)
+                                    && k.code == crossterm::event::KeyCode::Char('c')));
+                        if quit {
+                            if waiter.as_ref().unwrap().is_finished() {
+                                // bazel exited in the poll window: take the real
+                                // result instead of fabricating a cancellation
+                                break match waiter.take().unwrap().await {
+                                    Ok(Ok(res)) => Ok(res),
+                                    Ok(Err(e)) => Err(e),
+                                    Err(e) => Err(e.into()),
+                                };
                             }
+                            // capture what bazel wrote so far, then kill it
+                            waiter.as_ref().unwrap().abort();
+                            ingest(&mut state, &bep_path, offset);
+                            break Ok(ExecResult {
+                                code: 130,
+                                bep: Some(state),
+                                ..Default::default()
+                            });
                         }
                     }
+                    Err(e) => break Err(e.into()),
+                    _ => {}
                 }
-                Err(_) => {}
             }
+            offset = ingest(&mut state, &bep_path, offset);
             if let Err(e) = draw(
                 &mut self.terminal,
                 mode,
                 &state,
                 pending.len(),
                 started.elapsed(),
+                &console,
             ) {
                 break Err(e);
             }
@@ -154,6 +158,34 @@ impl TuiTerminal {
         }
         outcome
     }
+}
+
+/// Read and decode the BEP bytes appended since `offset`; returns the new
+/// cursor. The sidecar is written whole at bazel's exit, so this mostly
+/// serves mid-write tails and the quit path; the completed state comes
+/// from the waiter's parsed result instead.
+fn ingest(state: &mut BepOutput, path: &std::path::Path, offset: usize) -> usize {
+    use std::io::{Seek, SeekFrom};
+    match std::fs::File::open(path) {
+        Ok(mut f) => {
+            if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
+                let mut buf = Vec::new();
+                if f.read_to_end(&mut buf).is_ok() {
+                    // a truncated tail is normal mid-write: keep the old
+                    // state and the cursor where it was
+                    match baztet_core::baztet_bep::parse_prefix(&buf, 0) {
+                        Ok((delta, consumed)) => {
+                            state.extend(delta);
+                            return offset + consumed;
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    offset
 }
 
 impl Drop for TuiTerminal {
@@ -177,6 +209,7 @@ fn draw(
     out: &BepOutput,
     requested: usize,
     elapsed: Duration,
+    console: &baztet_core::exec::ConsoleCapture,
 ) -> anyhow::Result<()> {
     let (done, mut rows): (usize, Vec<Row>) = match mode {
         DashMode::Test => {
@@ -242,7 +275,15 @@ fn draw(
         .header(Row::new(["target", "status"]).style(Style::new().bold()))
         .block(Block::bordered().title(header));
         f.render_widget(table, chunks[0]);
-        f.render_widget(Paragraph::new("q / ctrl-c cancels bazel"), chunks[1]);
+        // live bazel progress in the footer: the console is the streaming
+        // source (the BEP sidecar is written whole at exit)
+        let progress = console.last_progress();
+        let footer = if progress.is_empty() {
+            "q / ctrl-c cancels bazel".to_string()
+        } else {
+            format!("q cancels bazel · {progress}")
+        };
+        f.render_widget(Paragraph::new(footer), chunks[1]);
     })?;
     Ok(())
 }
@@ -282,6 +323,7 @@ mod tests {
             &out,
             5,
             Duration::from_secs(3),
+            &baztet_core::exec::ConsoleCapture::default(),
         )
         .unwrap();
         let text: String = terminal
@@ -317,6 +359,7 @@ mod tests {
             &out,
             requested,
             Duration::from_secs(5),
+            &baztet_core::exec::ConsoleCapture::default(),
         )
         .unwrap();
         let text: String = terminal
@@ -347,6 +390,7 @@ mod tests {
             &out,
             requested,
             Duration::from_secs(9),
+            &baztet_core::exec::ConsoleCapture::default(),
         )
         .unwrap();
         let text: String = terminal
