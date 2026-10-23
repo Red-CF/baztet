@@ -94,9 +94,7 @@ bazel-bin: /ws/bazel-bin
             std::fs::write(marker.join("MODULE.bazel"), "").unwrap();
         }
         let found = find_workspace_root(&marker);
-        // the temp dir chain may itself contain a marker above; only require
-        // that the marker dir is at-or-above the result boundary... simplest:
-        // search upward must stop at some marker.
+        // the temp chain may hold markers above; only assert upward search stops somewhere
         assert!(found.is_some());
         let _ = std::fs::remove_file(marker.join("MODULE.bazel"));
     }

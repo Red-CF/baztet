@@ -71,8 +71,7 @@ pub async fn sync(
                 eprintln!("[baztet] project view unchanged; refreshing aspect outputs");
                 let mut snapshot = existing;
                 let all_targets = snapshot.specified_targets.clone();
-                // fresh refresh starts clean; a failing aspect re-marks it
-                // below (one transient failure must not stick forever)
+                // refresh starts clean; a failing aspect re-marks it
                 snapshot.has_error = false;
                 let aspect_secs = run_aspect_phase_once(
                     runner,
@@ -111,9 +110,6 @@ pub async fn sync(
     let mut aspect_secs = None;
     let mut parsed = 0usize;
     if run_aspect_phase {
-        // delta mode: rebuild only targets in packages whose BUILD changed
-        // since the recorded snapshot; everything else keeps cached aspect
-        // outputs (this is where the incremental win lives)
         let (targets, delta_ran) =
             delta_aspect_targets(recorded_pkg_mtimes.as_ref(), &current_mtimes, &snapshot.specified_targets);
         aspect_secs =
@@ -130,9 +126,8 @@ pub async fn sync(
     })
 }
 
-/// Record this run's walker facts and the live `bazel info` text. Shared by
-/// all three ladder outcomes so no path persists stale cache keys — derive
-/// off records None (the map's emptiness means "not applicable").
+/// Record this run's walker facts and the live `bazel info` text; every
+/// ladder outcome uses this so no path persists stale cache keys.
 fn refresh_snapshot_meta(
     snapshot: &mut Snapshot,
     runner: &BazelRunner,
@@ -144,11 +139,9 @@ fn refresh_snapshot_meta(
     snapshot.bazel_binary = Some(runner.binary.clone());
 }
 
-/// Aspect-build targets. Delta mode (a recorded per-package mtime map in
-/// the snapshot and non-empty changes): only labels in changed packages,
-/// so bazel re-analyzes just the fraction. Fall back to every specified
-/// target when there is no recorded map, nothing changed, or no label
-/// matched — a narrower list there would leave outputs missing.
+/// Aspect-build targets. Delta mode selects only labels in packages whose
+/// BUILD changed; no recorded map, no changes, or no label matched falls
+/// back to every target — a narrower list would leave outputs missing.
 fn delta_aspect_targets(
     recorded: Option<&BTreeMap<String, u64>>,
     current_mtimes: &BTreeMap<String, u64>,
@@ -354,11 +347,9 @@ pub async fn aspect_sync(
     Ok(())
 }
 
-/// Configurations from BEP `BuildConfiguration` events (the
-/// `bazel config --dump_all` dump is stored upstream-of-need; wire it in
-/// when a CLI flag consumes configurations).
-///
-/// `bazel config` fallback kept behind a function for M5+.
+/// Configurations from BEP `BuildConfiguration` events; the
+/// `bazel config --dump_all` fallback stays behind this function until a
+/// CLI flag consumes configurations.
 async fn fetch_configurations(
     _runner: &BazelRunner,
     output: &BepOutput,
@@ -404,11 +395,8 @@ fn merge_ide_infos(
         .unwrap(),
     );
 
-    // parse in parallel (indicatif progress is Send, rayon drives the loop);
-    //    rayon blocks inside the async runtime worker, so run under
-    //    block_in_place to keep the multi-thread executor responsive
-    //    (single-thread runtimes would panic here — CLI always uses
-    //    multi_thread, and the merge path never runs under one)
+    // rayon blocks the calling worker; block_in_place keeps this executor
+    // responsive. Panics on a single-thread runtime, which the CLI never uses.
     tokio::task::block_in_place(|| {
         type ParseJob = Option<(
             String,
@@ -480,10 +468,8 @@ fn merge_ide_infos(
         }
     });
 
-    // prune reuse metadata for BEP keys gone from this build. In delta mode
-    // the BEP only covers the changed subset, so the untouched outputs stay
-    // valid: skip the prune there (stale keys leak only through workspace
-    // churn and cost nothing to keep).
+    // delta BEPs only cover the changed subset: skip the prune there, the
+    // untouched outputs stay valid (lingering stale keys cost nothing)
     if !delta_ran {
         let live: BTreeSet<String> = output
             .target_outputs
@@ -514,9 +500,8 @@ fn aspect_output_mtime(path: &camino::Utf8PathBuf) -> Option<std::time::Duration
         .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
 }
 
-/// The recorded meta is `relpath@mtime_secs`; an output counts as unchanged
-/// only when both match exactly (bazel rewrites aspect files when the
-/// analysis output changes).
+/// The recorded meta is `relpath@mtime_secs`; bazel rewrites aspect files
+/// when the analysis output changes, so both parts must match exactly.
 fn file_is_newer(
     mtime: Option<std::time::Duration>,
     relative: &str,

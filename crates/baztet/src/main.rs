@@ -57,10 +57,8 @@ fn test_status_colored(status: &str) -> String {
         .to_string()
 }
 
-/// Does this BEP status make the exit code fail? Any non-PASSED verdict
-/// does (restored 0.2 semantics: CI gates on the exit code, and FLAKY /
-/// CANCELLED / TIMEOUT must not greenlight a run). Display buckets above
-/// are finer than this predicate.
+/// Does this BEP status fail the exit code? Any non-PASSED verdict does
+/// (CI gates on the exit code); display buckets are finer than this.
 fn status_is_failure(status: &str) -> bool {
     status != "PASSED"
 }
@@ -765,9 +763,9 @@ async fn runner_for(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     Ok(runner)
 }
 
-/// Discover workspace + probe the bazel binary. `refresh` forces a live
-/// `bazel info`; otherwise a snapshot's cached info text is reused, so
-/// exec commands skip the info spawn.
+/// Discover workspace + bazel binary; without `refresh`, reuse the
+/// snapshot's cached info text so exec commands skip the info spawn
+/// (only when the snapshot's bazel_binary matches).
 async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     let ws = workspace_of(cli)?;
     // --bazel wins; else the project view's `bazel_binary`; else `bazel`

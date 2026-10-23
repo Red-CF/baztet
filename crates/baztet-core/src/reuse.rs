@@ -101,8 +101,7 @@ pub fn decide_reuse(
 /// Stable fingerprint of everything that changes the query result.
 ///
 /// `DefaultHasher::new()` is deterministic per rustc build; a fingerprint
-/// from an older toolchain simply misses the reuse ladder (one full
-/// resync), never produces a wrong reuse.
+/// from an older toolchain just misses the ladder (one resync, no wrong reuse).
 pub fn sync_fingerprint(specs: &[String], pv: &ProjectView, runner: &BazelRunner) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

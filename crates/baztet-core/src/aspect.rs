@@ -103,9 +103,8 @@ pub fn deploy(
 ) -> std::io::Result<Utf8PathBuf> {
     let deploy_dir = workspace_root.join(prefix);
     std::fs::create_dir_all(&deploy_dir)?;
-    // self-ignoring dir (same trick as the plugin's .bazelbsp/.gitignore):
-    // everything baztet writes under the deploy dir stays invisible to git
-    // (write_if_differs keeps the mtime stable so idempotency holds)
+    // self-ignoring dir (same trick as the plugin's .bazelbsp/.gitignore);
+    // write_if_differs keeps the mtime stable so idempotency holds
     write_if_differs(&deploy_dir.join(".gitignore"), "*\n");
 
     let t = Transformers {

@@ -33,9 +33,8 @@ fn fixture_exists() -> bool {
     std::path::Path::new(ws).join("MODULE.bazel").is_file()
 }
 
-/// Restores BAZTET_CACHE_DIR on drop: env is process-global, so a panic or
-/// a later test in the same binary must not inherit it. Also removes the
-/// throwaway cache dir.
+/// Restores BAZTET_CACHE_DIR and removes the throwaway cache dir on drop:
+/// process-global env must not leak into later tests.
 struct CacheEnv {
     _prev: Option<std::ffi::OsString>,
     dir: std::path::PathBuf,
