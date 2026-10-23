@@ -87,10 +87,19 @@ pub async fn build_cmd(
 ) -> anyhow::Result<ExitCode> {
     let ctx = Ctx::exec(cli, false, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
-    let result = ctx
-        .runner
-        .exec_build(ctx.pv(), &spec(labels, passthrough))
-        .await?;
+    let build_spec = spec(labels, passthrough);
+    let result = if std::io::stdout().is_terminal() && !cli.raw {
+        // the dashboard is how a build runs on a terminal
+        let child = ctx.runner.exec_build_fork(ctx.pv(), &build_spec).await?;
+        tui::run(
+            tui::DashMode::Build,
+            child,
+            ctx.snapshot()?.specified_targets.clone(),
+        )
+        .await?
+    } else {
+        ctx.runner.exec_build(ctx.pv(), &build_spec).await?
+    };
     ui::present_exec("build", &result, true);
     Ok(exit_for("build", result.code))
 }
@@ -120,7 +129,7 @@ pub async fn test_cmd(
                 .runner
                 .exec_test_fork(ctx.pv(), &test_spec, true)
                 .await?;
-            tui::run_test(child, labels).await?
+            tui::run(tui::DashMode::Test, child, labels).await?
         }
         _ => ctx.runner.exec_test(ctx.pv(), &test_spec).await?,
     };
@@ -224,10 +233,18 @@ pub async fn coverage_cmd(
 ) -> anyhow::Result<ExitCode> {
     let ctx = Ctx::exec(cli, false, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
-    let result = ctx
-        .runner
-        .exec_coverage(ctx.pv(), &spec(labels, passthrough))
-        .await?;
+    let cov_spec = spec(labels, passthrough);
+    let result = if std::io::stdout().is_terminal() && !cli.raw {
+        let child = ctx.runner.exec_coverage_fork(ctx.pv(), &cov_spec).await?;
+        tui::run(
+            tui::DashMode::Build,
+            child,
+            ctx.snapshot()?.specified_targets.clone(),
+        )
+        .await?
+    } else {
+        ctx.runner.exec_coverage(ctx.pv(), &cov_spec).await?
+    };
     ui::present_exec("coverage", &result, true);
     if let Some(bep) = result.bep.as_ref() {
         // lcov merged report referenced in BEP build tool logs / outputs

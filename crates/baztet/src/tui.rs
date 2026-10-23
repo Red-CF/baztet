@@ -12,12 +12,24 @@ use ratatui::{
 use baztet_core::baztet_bep::BepOutput;
 use baztet_core::exec::{ExecChild, ExecResult};
 
-/// Forked `bazel test` driven through the alt screen; returns the same
-/// [`ExecResult`] the non-TUI path would have produced, terminal restored
-/// on every exit path.
-pub async fn run_test(child: ExecChild, pending: Vec<String>) -> anyhow::Result<ExecResult> {
+/// Which command the dashboard mirrors: `test` shows BEP verdicts,
+/// `build`/`coverage` show target completions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashMode {
+    Test,
+    Build,
+}
+
+/// A forked bazel command driven through the alt screen; returns the same
+/// [`ExecResult`] the non-dashboard path would have produced, terminal
+/// restored on every exit path.
+pub async fn run(
+    mode: DashMode,
+    child: ExecChild,
+    pending: Vec<String>,
+) -> anyhow::Result<ExecResult> {
     let mut terminal = TuiTerminal::enter()?;
-    let result = terminal.drive(child, pending).await;
+    let result = terminal.drive(mode, child, pending).await;
     drop(terminal);
     result
 }
@@ -42,6 +54,7 @@ impl TuiTerminal {
 
     async fn drive(
         &mut self,
+        mode: DashMode,
         child: ExecChild,
         pending: Vec<String>,
     ) -> anyhow::Result<ExecResult> {
@@ -109,9 +122,9 @@ impl TuiTerminal {
             }
             if let Err(e) = draw(
                 &mut self.terminal,
+                mode,
                 &state,
                 pending.len(),
-                &state.test_summaries,
                 started.elapsed(),
             ) {
                 break Err(e);
@@ -143,25 +156,54 @@ fn restore() {
 
 fn draw(
     terminal: &mut Terminal<impl Backend>,
-    _state: &BepOutput,
+    mode: DashMode,
+    out: &BepOutput,
     requested: usize,
-    summaries: &[baztet_core::baztet_bep::TestSummary],
     elapsed: Duration,
 ) -> anyhow::Result<()> {
-    let done = summaries.len();
+    let (done, mut rows): (usize, Vec<Row>) = match mode {
+        DashMode::Test => {
+            let rows: Vec<Row> = out
+                .test_summaries
+                .iter()
+                .map(|s| {
+                    Row::new([Cell::from(s.label.clone()), Cell::from(s.status.clone())])
+                        .style(test_style(&s.status))
+                })
+                .collect();
+            (out.test_summaries.len(), rows)
+        }
+        // build rows: failures first, then completions, then the running tail
+        DashMode::Build => {
+            let mut failures: Vec<Row> = Vec::new();
+            let mut built: Vec<Row> = Vec::new();
+            out.target_status.iter().for_each(|(label, success)| {
+                let verdict = |txt: &str| {
+                    Row::new([Cell::from(label.clone()), Cell::from(txt.to_string())]).style(
+                        if *success {
+                            Style::new().fg(Color::Green)
+                        } else {
+                            Style::new().fg(Color::Red)
+                        },
+                    )
+                };
+                if *success {
+                    built.push(verdict("BUILT"));
+                } else {
+                    failures.push(verdict("FAILED"));
+                }
+            });
+            let done = out.target_status.len();
+            (done, [failures, built].concat())
+        }
+    };
     // the denominator is the requested list: it never grows while targets finish
     let total = requested.max(done);
     let header = format!(
-        " baztet test — {done}/{total} targets · {:.0}s",
+        " baztet {} — {done}/{total} targets · {:.0}s",
+        mode_title(mode),
         elapsed.as_secs_f64()
     );
-    let mut rows: Vec<Row> = summaries
-        .iter()
-        .map(|s| {
-            Row::new([Cell::from(s.label.clone()), Cell::from(s.status.clone())])
-                .style(target_style(&s.status))
-        })
-        .collect();
     if requested > done {
         rows.push(
             Row::new([Cell::from(format!(
@@ -188,7 +230,7 @@ fn draw(
     Ok(())
 }
 
-fn target_style(status: &str) -> Style {
+fn test_style(status: &str) -> Style {
     match status {
         "PASSED" => Style::new().fg(Color::Green),
         "FAILED" | "TIMEOUT" | "ERROR" => Style::new().fg(Color::Red),
@@ -197,11 +239,46 @@ fn target_style(status: &str) -> Style {
     }
 }
 
+fn mode_title(mode: DashMode) -> &'static str {
+    match mode {
+        DashMode::Test => "test",
+        DashMode::Build => "build/coverage",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use baztet_core::baztet_bep::TestSummary;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn dashboard_rows_by_mode() {
+        let mut out = BepOutput::default();
+        out.target_status.insert("//a:good".into(), true);
+        out.target_status.insert("//a:bad".into(), false);
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        draw(
+            &mut terminal,
+            DashMode::Build,
+            &out,
+            5,
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("//a:bad"), "failure row missing: {text}");
+        assert!(text.contains("FAILED"), "FAILED verdict missing: {text}");
+        assert!(text.contains("2/5 targets"), "header got: {text}");
+        assert!(text.contains("3 still running"), "pending missing: {text}");
+    }
 
     fn summary(label: &str, status: &str) -> TestSummary {
         TestSummary {
@@ -213,14 +290,15 @@ mod tests {
     #[test]
     fn header_denominator_stabilizes() {
         let requested = 10;
-        let summaries = [summary("//a:one", "PASSED"), summary("//a:two", "FAILED")];
+        let mut out = BepOutput::default();
+        out.test_summaries = [summary("//a:one", "PASSED"), summary("//a:two", "FAILED")].into();
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         draw(
             &mut terminal,
-            &BepOutput::default(),
+            DashMode::Test,
+            &out,
             requested,
-            &summaries,
             Duration::from_secs(5),
         )
         .unwrap();
@@ -242,14 +320,15 @@ mod tests {
     #[test]
     fn header_shows_full_when_all_finish() {
         let requested = 2;
-        let summaries = [summary("//a:one", "PASSED"), summary("//a:two", "FLAKY")];
+        let mut out = BepOutput::default();
+        out.test_summaries = [summary("//a:one", "PASSED"), summary("//a:two", "FLAKY")].into();
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         draw(
             &mut terminal,
-            &BepOutput::default(),
+            DashMode::Test,
+            &out,
             requested,
-            &summaries,
             Duration::from_secs(9),
         )
         .unwrap();
@@ -265,12 +344,12 @@ mod tests {
     }
 
     #[test]
-    fn target_styles_map_to_verdicts() {
-        assert_eq!(target_style("PASSED").fg, Some(Color::Green));
-        assert_eq!(target_style("FAILED").fg, Some(Color::Red));
-        assert_eq!(target_style("TIMEOUT").fg, Some(Color::Red));
-        assert_eq!(target_style("ERROR").fg, Some(Color::Red));
-        assert_eq!(target_style("FLAKY").fg, Some(Color::Yellow));
-        assert_eq!(target_style("NO_STATUS").fg, None);
+    fn test_statuses_map_to_verdicts() {
+        assert_eq!(test_style("PASSED").fg, Some(Color::Green));
+        assert_eq!(test_style("FAILED").fg, Some(Color::Red));
+        assert_eq!(test_style("TIMEOUT").fg, Some(Color::Red));
+        assert_eq!(test_style("ERROR").fg, Some(Color::Red));
+        assert_eq!(test_style("FLAKY").fg, Some(Color::Yellow));
+        assert_eq!(test_style("NO_STATUS").fg, None);
     }
 }

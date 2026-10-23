@@ -89,6 +89,9 @@ pub struct BepOutput {
     pub test_summaries: Vec<TestSummary>,
     /// per-attempt results (from TestResult events)
     pub test_results: Vec<TestResultDetail>,
+    /// target label -> success flag of its latest TargetCompleted event
+    /// (live build progress for the dashboard)
+    pub target_status: BTreeMap<String, bool>,
     /// non-empty stderr lines from progress events (diagnostics source)
     pub progress_lines: Vec<String>,
 }
@@ -189,7 +192,7 @@ fn handle(out: &mut BepOutput, event: build_event_stream::BuildEvent) -> Result<
                 return Ok(());
             };
             let key = TargetKey {
-                label,
+                label: label.clone(),
                 configuration: configuration.map(|c| c.id).unwrap_or_default(),
             };
             let groups = out.target_outputs.entry(key).or_default();
@@ -199,6 +202,9 @@ fn handle(out: &mut BepOutput, event: build_event_stream::BuildEvent) -> Result<
                     .or_default()
                     .extend(group.file_sets.iter().map(|fs| fs.id.clone()));
             }
+            // aspect completions re-report the base target; last wins is fine
+            // for the dashboard (both carry the same success flag)
+            out.target_status.insert(label, completed.success);
         }
         Some(P::Configuration(config)) => {
             let Some(IdKind::Configuration(build_event_id::ConfigurationId { id })) = id_kind

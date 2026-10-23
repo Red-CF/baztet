@@ -102,7 +102,17 @@ impl BazelRunner {
         pv: &ProjectView,
         spec: &ExecSpec,
     ) -> Result<ExecResult, ExecError> {
-        self.exec_with_bep("build", pv, spec, |argv| {
+        let child = self.exec_build_fork(pv, spec).await?;
+        child.wait_with_ui(self.quiet).await
+    }
+
+    /// `bazel build` forked without waiting: the dashboard polls the live BEP.
+    pub async fn exec_build_fork(
+        &self,
+        pv: &ProjectView,
+        spec: &ExecSpec,
+    ) -> Result<ExecChild, ExecError> {
+        self.exec_fork("build", pv, spec, true, |argv| {
             argv.extend(pv.build_flags.iter().cloned());
             Ok(())
         })
@@ -182,7 +192,17 @@ impl BazelRunner {
         pv: &ProjectView,
         spec: &ExecSpec,
     ) -> Result<ExecResult, ExecError> {
-        self.exec_with_bep("coverage", pv, spec, |argv| {
+        let child = self.exec_coverage_fork(pv, spec).await?;
+        child.wait_with_ui(self.quiet).await
+    }
+
+    /// `bazel coverage` forked without waiting: the dashboard polls live.
+    pub async fn exec_coverage_fork(
+        &self,
+        pv: &ProjectView,
+        spec: &ExecSpec,
+    ) -> Result<ExecChild, ExecError> {
+        self.exec_fork("coverage", pv, spec, true, |argv| {
             argv.extend(pv.build_flags.iter().cloned());
             argv.push("--combined_report=lcov".to_string());
             Ok(())
@@ -190,21 +210,8 @@ impl BazelRunner {
         .await
     }
 
-    async fn exec_with_bep(
-        &self,
-        command: &str,
-        _pv: &ProjectView,
-        spec: &ExecSpec,
-        extra_flags: impl FnOnce(&mut Vec<String>) -> Result<(), BazelError>,
-    ) -> Result<ExecResult, ExecError> {
-        let child = self
-            .exec_fork(command, _pv, spec, self.quiet, extra_flags)
-            .await?;
-        child.wait_with_ui(self.quiet).await
-    }
-
     /// Spawn one exec command; the caller decides how to wait on it
-    /// (plain [`ExecChild::wait`], live BEP polling for the TUI, ...).
+    /// (plain [`ExecChild::wait`], live BEP polling for the dashboard, ...).
     pub async fn exec_fork(
         &self,
         command: &str,

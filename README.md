@@ -117,14 +117,14 @@ either one; `baztet doctor` prints what it found.
 Then your daily flows:
 
 ```bash
-baztet build [labels]                  # bazel build with your project view flags
+baztet build [labels]                  # live dashboard like test, quiet or --raw otherwise
 baztet test [labels]                   # BEP-driven results, junit case reports
 baztet test --pattern unit             # select tests by label substring
-baztet test                            # live dashboard on a terminal; q cancels bazel
+baztet test                            # live per-target dashboard; q cancels bazel
 baztet test --cases                    # per-case results for failures/errors
 baztet test --json                     # machine-readable report (targets + cases)
 baztet run LABEL                       # streamed output
-baztet coverage [labels]               # merged lcov report paths
+baztet coverage [labels]               # live dashboard + merged lcov report paths
 baztet recipes                         # your .bazel/*.xml run configs, imported
 baztet recipes --run "web unit tests"  # run one, with its env vars
 ```
@@ -136,13 +136,16 @@ language.
 
 ## Output: quiet by default
 
-On a terminal, `baztet test` runs the live dashboard (per-target table, q
-cancels). `build`/`test`/`coverage` without a dashboard capture bazel's
-console output and show signal instead of noise: a Bastet spinner while
-bazel works, every warning line after it finishes, and the raw error
-output only when something fails. A green build is one line. `--raw`
-restores full streaming (and disables the dashboard); pipes and CI get
-the capture automatically; `run` stays interactive by definition.
+On a terminal, `test`/`build`/`coverage` run the live dashboard: an alt
+screen table of targets (colored verdicts for `test`, completions and
+failures first for `build`/`coverage`, counts in the header), read live
+from the BEP stream. `q` / ctrl-c cancels bazel and reports what was
+written so far. No flag decides this — the dashboard is what running on
+a terminal looks like. Without a tty (pipes, CI) the same command runs
+quietly: a Bastet spinner while bazel works, every warning line after
+it finishes, the raw error output (stderr then stdout, 400-line tail)
+only when something fails. A green build is one line. `--raw` restores
+full streaming on every command; `run` stays interactive by definition.
 
 Exit codes keep their contract: `test` exits 3 when any test target did
 not pass (FLAKY / CANCELLED / TIMEOUT included), 0 otherwise — for CI to
