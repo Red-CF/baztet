@@ -75,7 +75,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "baztet"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "baztet-core",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "baztet-bep"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "baztet-protos",
  "camino",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "baztet-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "baztet-bep",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "baztet-projectview"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "camino",
  "thiserror",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "baztet-protos"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "baztet-snapshot"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bincode",
  "camino",
