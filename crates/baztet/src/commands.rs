@@ -316,11 +316,21 @@ pub async fn recipes_cmd(cli: &Cli, run: Option<String>, json: bool) -> anyhow::
             };
             if recipe.command == "test" {
                 // acceptance/unit recipes run their target; no extra filter
-                let result = runner.exec_test(&pv, &exec_spec).await?;
+                let result = if std::io::stdout().is_terminal() && !cli.raw {
+                    let child = runner.exec_test_fork(&pv, &exec_spec, true).await?;
+                    tui::run(tui::DashMode::Test, child, exec_spec.labels.clone()).await?
+                } else {
+                    runner.exec_test(&pv, &exec_spec).await?
+                };
                 ui::present_exec("test", &result, false);
                 Ok(exit_for("test", result.code))
             } else if recipe.command == "build" {
-                let result = runner.exec_build(&pv, &exec_spec).await?;
+                let result = if std::io::stdout().is_terminal() && !cli.raw {
+                    let child = runner.exec_build_fork(&pv, &exec_spec).await?;
+                    tui::run(tui::DashMode::Build, child, exec_spec.labels.clone()).await?
+                } else {
+                    runner.exec_build(&pv, &exec_spec).await?
+                };
                 ui::present_exec("build", &result, true);
                 Ok(exit_for("build", result.code))
             } else if recipe.command == "run" {

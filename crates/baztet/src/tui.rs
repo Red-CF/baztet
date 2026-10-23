@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 use ratatui::{
@@ -66,10 +67,7 @@ impl TuiTerminal {
             child.wait().await.map_err(anyhow::Error::from)
         }));
         let mut state = BepOutput::default();
-        let mut last_len = 0u64;
-        let mut last_parse = started
-            .checked_sub(Duration::from_secs(1))
-            .unwrap_or(started);
+        let mut offset = 0usize;
         // the loop breaks through several paths; if it bails out early the
         // waiter still owns the live Child — aborting drops the Child and
         // kill_on_drop terminates bazel
@@ -96,8 +94,19 @@ impl TuiTerminal {
                     if quit {
                         // capture what bazel wrote so far, then kill it
                         waiter.as_ref().unwrap().abort();
-                        if let Some(out) = ExecChild::live_bep_snapshot(&bep_path) {
-                            state = out;
+                        // final incremental pass: whatever bazel wrote so far
+                        if let Ok(mut f) = std::fs::File::open(&bep_path) {
+                            use std::io::Seek;
+                            if f.seek(std::io::SeekFrom::Start(offset as u64)).is_ok() {
+                                let mut buf = Vec::new();
+                                if f.read_to_end(&mut buf).is_ok() {
+                                    if let Ok((delta, _)) =
+                                        baztet_core::baztet_bep::parse_prefix(&buf, 0)
+                                    {
+                                        state.extend(delta);
+                                    }
+                                }
+                            }
                         }
                         break Ok(ExecResult {
                             code: 130,
@@ -109,16 +118,24 @@ impl TuiTerminal {
                 Ok(_) => {}
                 Err(e) => break Err(e.into()),
             }
-            // the sidecar only grows: skip re-parse while its size is
-            // stable, and at most ~2x/s while it grows (an incremental
-            // cursor is the upgrade path)
-            let len = std::fs::metadata(&bep_path).map(|m| m.len()).unwrap_or(0);
-            if len > last_len && last_parse.elapsed() >= Duration::from_millis(500) {
-                last_len = len;
-                last_parse = Instant::now();
-                if let Some(out) = ExecChild::live_bep_snapshot(&bep_path) {
-                    state = out;
+            // incremental: read only appended bytes and decode only new
+            // frames (O(delta) per tick, no whole-file re-parse)
+            match std::fs::File::open(&bep_path) {
+                Ok(mut f) => {
+                    use std::io::{Seek, SeekFrom};
+                    if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
+                        let mut buf = Vec::new();
+                        if f.read_to_end(&mut buf).is_ok() {
+                            if let Ok((delta, consumed)) =
+                                baztet_core::baztet_bep::parse_prefix(&buf, 0)
+                            {
+                                offset += consumed;
+                                state.extend(delta);
+                            }
+                        }
+                    }
                 }
+                Err(_) => {}
             }
             if let Err(e) = draw(
                 &mut self.terminal,

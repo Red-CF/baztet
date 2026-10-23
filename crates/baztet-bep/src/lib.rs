@@ -97,6 +97,32 @@ pub struct BepOutput {
 }
 
 impl BepOutput {
+    /// Merge a parsed delta into the running state. Repeated events win:
+    /// test summaries and target status are keyed by label, the rest append.
+    pub fn extend(&mut self, delta: BepOutput) {
+        for s in delta.test_summaries {
+            self.test_summaries.retain(|t| t.label != s.label);
+            self.test_summaries.push(s);
+        }
+        for (key, groups) in delta.target_outputs {
+            let buckets = self.target_outputs.entry(key).or_default();
+            for (group, sets) in groups {
+                buckets.entry(group).or_default().extend(sets);
+            }
+        }
+        self.named_sets.extend(delta.named_sets);
+        self.configurations.extend(delta.configurations);
+        self.target_status.extend(delta.target_status);
+        self.test_results.extend(delta.test_results);
+        self.progress_lines.extend(delta.progress_lines);
+        self.server_pid = delta.server_pid.or(self.server_pid);
+        self.build_tool_version = match self.build_tool_version.take() {
+            v @ Some(_) => delta.build_tool_version.or(v),
+            None => delta.build_tool_version,
+        };
+        self.exit_code = delta.exit_code.or(self.exit_code);
+    }
+
     /// Files of one named set, child sets resolved recursively.
     pub fn resolve_named_set(&self, id: &str) -> BTreeSet<BepFile> {
         self.resolve_many([id])
@@ -140,6 +166,26 @@ impl BepOutput {
         };
         self.resolve_many(sets.iter().map(|s| s.as_str()))
     }
+}
+
+/// Frames from `start` until the first incomplete one (a mid-write tail is
+/// normal). Returns the delta plus how many bytes it consumed; the caller
+/// feeds `start` back as its cursor so growth-only parsing stays O(new bytes).
+pub fn parse_prefix(bytes: &[u8], start: usize) -> Result<(BepOutput, usize), BepError> {
+    let start = start.min(bytes.len());
+    let mut out = BepOutput::default();
+    let mut cursor = &bytes[start..];
+    let mut consumed = 0usize;
+    while !cursor.is_empty() {
+        let before = cursor.len();
+        match build_event_stream::BuildEvent::decode_length_delimited(&mut cursor) {
+            Ok(event) => handle(&mut out, event)?,
+            // incomplete or corrupt frame: stop at the last good boundary
+            Err(_) => break,
+        }
+        consumed += before - cursor.len();
+    }
+    Ok((out, start + consumed))
 }
 
 /// Parse a complete BEP file's bytes (length-delimited `BuildEvent` frames).
@@ -439,5 +485,44 @@ mod tests {
     fn strip_ansi_codes() {
         assert_eq!(strip_ansi("\u{1b}[31merr\u{1b}[0m"), "err");
         assert_eq!(strip_ansi("plain"), "plain");
+    }
+
+    fn started_event() -> bes::BuildEvent {
+        use bes::{build_event, build_event_id, BuildStarted};
+        bes::BuildEvent {
+            id: Some(bes::BuildEventId {
+                id: Some(build_event_id::Id::Started(
+                    build_event_id::BuildStartedId {},
+                )),
+            }),
+            payload: Some(build_event::Payload::Started(BuildStarted {
+                build_tool_version: "release 9.2.0".into(),
+                server_pid: 4242,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prefix_then_extend_reaches_full_parse() {
+        let bytes = framed(&[started_event()]);
+        let full = parse(&bytes).unwrap();
+
+        // a prefix stops at the mid-write tail without error
+        let (delta, consumed) = parse_prefix(&bytes[..bytes.len() / 2], 0).unwrap();
+        let mut state = BepOutput::default();
+        state.extend(delta);
+
+        // resuming from the cursor reaches the end
+        let (rest, tail) = parse_prefix(&bytes, consumed).unwrap();
+        assert_eq!(tail, bytes.len());
+        state.extend(rest);
+        assert_eq!(state.server_pid, full.server_pid);
+
+        // an exhausted cursor yields an empty delta
+        let (empty, again) = parse_prefix(&bytes, bytes.len()).unwrap();
+        assert_eq!(again, bytes.len());
+        assert!(empty.test_summaries.is_empty() && empty.named_sets.is_empty());
     }
 }
