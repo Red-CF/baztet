@@ -120,8 +120,9 @@ Then your daily flows:
 baztet build [labels]                  # bazel build with your project view flags
 baztet test [labels]                   # BEP-driven results, junit case reports
 baztet test --pattern unit             # select tests by label substring
+baztet test --cases                    # per-case results for failures/errors
 baztet test --json                     # machine-readable report (targets + cases)
-baztet test --tui                      # live per-target dashboard (alt screen)
+baztet test --tui                      # live per-target dashboard; q cancels bazel
 baztet run LABEL                       # streamed output
 baztet coverage [labels]               # merged lcov report paths
 baztet recipes                         # your .bazel/*.xml run configs, imported
@@ -136,15 +137,16 @@ language.
 ## Output: quiet by default
 
 `build`/`test`/`coverage` capture bazel's console output and show signal
-instead of noise: a spinner while bazel works, every warning line after
-it finishes, and the raw error output only when something fails. A green
-build is one line. `--raw` restores full streaming; `run` stays
+instead of noise: a Bastet spinner while bazel works, every warning line
+after it finishes, and the raw error output only when something fails. A
+green build is one line. `--raw` restores full streaming; `run` stays
 interactive by definition.
 
 Exit codes keep their contract: `test` exits 3 when any test target did
 not pass (FLAKY / CANCELLED / TIMEOUT included), 0 otherwise — for CI to
-gate on. `baztet targets --filter =java_library` selects by rule kind (the
-`=` prefix); plain filters match label substrings.
+gate on. Passthrough executes forward bazel's own exit code untouched.
+`baztet targets --filter =java_library` selects by rule kind (the `=`
+prefix); plain filters match label substrings.
 
 ## How sync stays fast
 
@@ -222,7 +224,7 @@ Crates, what each is for, where to start reading:
 
 | crate | role |
 |---|---|
-| `baztet` (`main.rs`) | CLI: argument parsing, exit codes, stderr presentation. `--json`/machine output never touch it. |
+| `baztet` | the CLI. Modules: `main.rs` = clap definitions + a 10-line dispatcher; `ctx.rs` = the per-command context (workspace/PV/runner/snapshot, built once); `commands.rs` = one function per subcommand; `ui.rs` = stderr presentation (`--json`/machine output never touch it); `tui.rs` = the alt-screen test dashboard. |
 | `baztet-core` | the pipeline. Start at `sync::sync` (orchestration); `query.rs` for phase 1 and `reuse.rs` for the reuse ladder (pure, table-tested); `exec.rs` for build/test/run/coverage; `aspect.rs` for deploying the vendored `intellij-aspect`; `ideinfo.rs` decodes the `TargetIdeInfo` text-format protos. |
 | `baztet-protos` | prost codegen for the vendored Bazel protos (`blaze_query`, build event stream) — a leaf, no internal deps. |
 | `baztet-bep` | BEP binary stream → queryable `BepOutput`. Leaf. |
