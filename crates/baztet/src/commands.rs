@@ -4,8 +4,8 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use crate::ctx::{
-    default_labels, exit_code, exit_for, load_pv, load_snapshot, parse_pv_soft, runner_for, spec,
-    test_labels, workspace_of, Ctx,
+    default_labels, exit_code, exit_for, load_pv, load_snapshot, runner_for, spec, test_labels,
+    workspace_of, Ctx,
 };
 use crate::tui;
 use crate::ui;
@@ -436,14 +436,7 @@ pub fn deps_cmd(
 /// same args, in the discovered workspace, streamed. --raw-ish by design.
 pub async fn passthrough_cmd(cli: &Cli, args: Vec<String>) -> anyhow::Result<ExitCode> {
     let ws = workspace_of(cli)?;
-    // same binary chain every other command uses; a PV parse failure does
-    // not block the escape hatch
-    let binary = match &cli.bazel {
-        Some(b) => b.clone(),
-        None => baztet_core::workspace::find_project_view(&ws)
-            .and_then(|p| parse_pv_soft(&p, &ws).map(|pv| pv.bazel_binary().to_owned()))
-            .unwrap_or_else(|| "bazel".to_string()),
-    };
+    let binary = crate::ctx::resolve_binary(cli, &ws);
     eprintln!(
         "[baztet] '{}' is not a baztet command; running bazel directly",
         args.first().map(String::as_str).unwrap_or("")

@@ -60,7 +60,7 @@ pub struct ExecCapture {
 }
 
 /// Warning lines extracted from a captured run, deduped, stdout first.
-/// O(matches) memory: never materializes the full console output.
+/// O(matches) memory beyond one lossy copy of each stream.
 pub fn warn_lines(capture: &ExecCapture) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -218,10 +218,9 @@ impl BazelRunner {
         }
         let bep_file = temp_bep_file();
         let mut argv: Vec<String> = vec![];
-        let quiet = capture;
-        // plain text while captured, so the failure dump stays readable
-        let plain = quiet;
-        common_flags(&mut argv, plain);
+        // captured output is post-processed, so keep it color-free and the
+        // failure dump readable
+        common_flags(&mut argv, capture);
         if command == "coverage" {
             argv.retain(|a| *a != BUILD_TAG_FILTERS);
         }
@@ -236,7 +235,7 @@ impl BazelRunner {
             .args(argv)
             .stdin(Stdio::null())
             .kill_on_drop(true);
-        if quiet {
+        if capture {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         } else {
             cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
@@ -264,7 +263,7 @@ impl BazelRunner {
             command: command.to_string(),
             child: Some(child),
             bep_file,
-            captured: quiet,
+            captured: capture,
             out_task,
             err_task,
             started,
@@ -272,9 +271,10 @@ impl BazelRunner {
     }
 }
 
-/// drain one piped stream, keeping only the last `DRAIN_CAP` bytes:
-/// presentation shows warnings + a failure tail, and buffering a
-/// pathological build's full console output would OOM the CLI
+/// drain one piped stream, keeping a bounded tail (the buffer sits
+/// between `DRAIN_CAP` and `2×DRAIN_CAP` between trims): presentation
+/// shows warnings + a failure tail, and buffering a pathological build's
+/// full console output would OOM the CLI
 async fn drain<S: tokio::io::AsyncRead + Unpin>(mut stream: S) -> Vec<u8> {
     const DRAIN_CAP: usize = 256 * 1024;
     let mut buf = Vec::new();
@@ -332,12 +332,15 @@ impl ExecChild {
             return Err(BazelError::Other("child already taken".into()).into());
         };
         let status = child.wait().await?;
+        // a panicked drain task must not surface as silent empty output
+        let join_err =
+            |e: tokio::task::JoinError| BazelError::Other(format!("console capture failed: {e}"));
         let stdout = match self.out_task.take() {
-            Some(t) => t.await.unwrap_or_default(),
+            Some(t) => t.await.map_err(join_err)?,
             None => Vec::new(),
         };
         let stderr = match self.err_task.take() {
-            Some(t) => t.await.unwrap_or_default(),
+            Some(t) => t.await.map_err(join_err)?,
             None => Vec::new(),
         };
         let bep = read_bep_or_none(&self.bep_file)?;

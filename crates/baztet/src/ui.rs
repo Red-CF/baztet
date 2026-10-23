@@ -73,18 +73,17 @@ pub fn present_exec(command: &str, result: &ExecResult, show_status: bool) {
     if result.code == 0 && show_status {
         ok(&format!("{command} ok ({:.1}s)", result.secs));
     }
-    if result.code != 0 && !show_status {
-        // exit 3 (failed verdicts) and its report belong to the caller
-        fail(&format!("bazel exited with code {}", result.code));
-    }
     if result.code != 0 {
-        let raw = if out.stderr.is_empty() {
-            &out.stdout
+        // both streams can carry the diagnosis (bazel splits by version);
+        // stderr first, 400 tail lines total
+        let stderr_text = String::from_utf8_lossy(&out.stderr);
+        let stdout_text = String::from_utf8_lossy(&out.stdout);
+        let combined = if stderr_text.trim().is_empty() {
+            stdout_text.to_string()
         } else {
-            &out.stderr
+            format!("{stderr_text}\n{stdout_text}")
         };
-        let text = String::from_utf8_lossy(raw);
-        let lines: Vec<&str> = text.lines().collect();
+        let lines: Vec<&str> = combined.lines().collect();
         let tail = &lines[lines.len().saturating_sub(400)..];
         for line in tail {
             eprintln!("{line}");

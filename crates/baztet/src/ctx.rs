@@ -27,7 +27,7 @@ impl Ctx {
         } else {
             None
         };
-        let pv = Some(load_pv(&runner, None)?);
+        let pv = Some(load_pv(&runner, cli.project_view.as_ref())?);
         Ok(Self {
             runner,
             pv,
@@ -184,13 +184,7 @@ pub async fn runner_for(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner>
 /// (only when the snapshot's bazel_binary matches).
 pub async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
     let ws = workspace_of(cli)?;
-    // --bazel wins; else the project view's `bazel_binary`; else `bazel`
-    let binary = match &cli.bazel {
-        Some(b) => b.clone(),
-        None => baztet_core::workspace::find_project_view(&ws)
-            .and_then(|p| parse_pv_soft(&p, &ws).map(|pv| pv.bazel_binary().to_owned()))
-            .unwrap_or_else(|| "bazel".to_string()),
-    };
+    let binary = resolve_binary(cli, &ws);
     if !refresh {
         if let Ok(snapshot) = baztet_snapshot::Snapshot::load(&ws) {
             // reuse the cached info only when the snapshot came from the
@@ -207,4 +201,16 @@ pub async fn discover(cli: &Cli, refresh: bool) -> anyhow::Result<BazelRunner> {
         }
     }
     Ok(BazelRunner::discover(&binary, &ws).await?)
+}
+
+/// The bazel binary every command must agree on: `--bazel`, else the
+/// project view's `bazel_binary`, else `bazel`. A PV parse failure falls
+/// back instead of blocking the command.
+pub fn resolve_binary(cli: &Cli, ws: &Utf8PathBuf) -> String {
+    match &cli.bazel {
+        Some(b) => b.clone(),
+        None => baztet_core::workspace::find_project_view(ws)
+            .and_then(|p| parse_pv_soft(&p, ws).map(|pv| pv.bazel_binary().to_owned()))
+            .unwrap_or_else(|| "bazel".to_string()),
+    }
 }

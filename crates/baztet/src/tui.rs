@@ -47,15 +47,33 @@ impl TuiTerminal {
     ) -> anyhow::Result<ExecResult> {
         let started = Instant::now();
         let bep_path = child.bep_path().to_owned();
-        let waiter = tokio::spawn(async move { child.wait().await.map_err(anyhow::Error::from) });
+        // Option: awaiting consumes the handle; ownership back-checks the
+        // early-abort path in the loop below
+        let mut waiter = Some(tokio::spawn(async move {
+            child.wait().await.map_err(anyhow::Error::from)
+        }));
         let mut state = BepOutput::default();
         let mut last_len = 0u64;
-        loop {
-            if waiter.is_finished() {
-                return waiter.await?;
+        let mut last_parse = started
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or(started);
+        // the loop breaks through several paths; if it bails out early the
+        // waiter still owns the live Child — aborting drops the Child and
+        // kill_on_drop terminates bazel
+        let outcome: anyhow::Result<ExecResult> = loop {
+            if waiter.as_ref().unwrap().is_finished() {
+                break match waiter.take().unwrap().await {
+                    Ok(Ok(res)) => Ok(res),
+                    Ok(Err(e)) => Err(e),
+                    Err(e) => Err(e.into()),
+                };
             }
-            if crossterm::event::poll(Duration::from_millis(200))? {
-                if let crossterm::event::Event::Key(k) = crossterm::event::read()? {
+            match crossterm::event::poll(Duration::from_millis(200)) {
+                Ok(_) => {}
+                Err(e) => break Err(e.into()),
+            }
+            match crossterm::event::read() {
+                Ok(crossterm::event::Event::Key(k)) => {
                     let quit = k.kind == crossterm::event::KeyEventKind::Press
                         && (k.code == crossterm::event::KeyCode::Char('q')
                             || (k
@@ -64,34 +82,47 @@ impl TuiTerminal {
                                 && k.code == crossterm::event::KeyCode::Char('c')));
                     if quit {
                         // capture what bazel wrote so far, then kill it
+                        waiter.as_ref().unwrap().abort();
                         if let Some(out) = ExecChild::live_bep_snapshot(&bep_path) {
                             state = out;
                         }
-                        waiter.abort();
-                        return Ok(ExecResult {
+                        break Ok(ExecResult {
                             code: 130,
                             bep: Some(state),
                             ..Default::default()
                         });
                     }
                 }
+                Ok(_) => {}
+                Err(e) => break Err(e.into()),
             }
-            // the sidecar only grows: skip re-parse while its size is stable
+            // the sidecar only grows: skip re-parse while its size is
+            // stable, and at most ~2x/s while it grows (an incremental
+            // cursor is the upgrade path)
             let len = std::fs::metadata(&bep_path).map(|m| m.len()).unwrap_or(0);
-            if len > last_len {
+            if len > last_len && last_parse.elapsed() >= Duration::from_millis(500) {
                 last_len = len;
+                last_parse = Instant::now();
                 if let Some(out) = ExecChild::live_bep_snapshot(&bep_path) {
                     state = out;
                 }
             }
-            draw(
+            if let Err(e) = draw(
                 &mut self.terminal,
                 &state,
                 pending.len(),
                 &state.test_summaries,
                 started.elapsed(),
-            )?;
+            ) {
+                break Err(e);
+            }
+        };
+        if outcome.is_err() {
+            if let Some(h) = waiter.as_ref() {
+                h.abort();
+            }
         }
+        outcome
     }
 }
 
