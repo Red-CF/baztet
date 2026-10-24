@@ -162,7 +162,7 @@ pub async fn test_cmd(
     } else {
         let (mut pass, mut failed_cnt, mut other) = (0usize, 0usize, 0usize);
         for (label, status) in &per_target {
-            println!("{}  {label}", ui::test_status_colored(status));
+            let _ = label;
             match status.as_str() {
                 "PASSED" => pass += 1,
                 // test verdicts that count against the exit code;
@@ -172,7 +172,20 @@ pub async fn test_cmd(
                 _ => other += 1,
             }
         }
-        if cases {
+        // everything green: just the totals; detail belongs to the run
+        // that failed (per-target rows + case reports below)
+        if !failed {
+            println!(
+                "test ok: {pass} of {} target(s) passed, 0 failed",
+                per_target.len()
+            );
+        }
+        if failed {
+            for (label, status) in &per_target {
+                println!("{}  {label}", ui::test_status_colored(status));
+            }
+        }
+        if failed && cases {
             use baztet_core::exec::TestCaseStatus;
             for (label, case_list) in &parsed {
                 for case in case_list {
@@ -194,10 +207,12 @@ pub async fn test_cmd(
                 }
             }
         }
-        println!(
-            "{pass} passed · {failed_cnt} failed · {other} other ({})",
-            per_target.len()
-        );
+        if failed {
+            println!(
+                "{pass} passed · {failed_cnt} failed · {other} other ({})",
+                per_target.len()
+            );
+        }
     }
     Ok(exit_for(
         "test",

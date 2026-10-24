@@ -197,35 +197,36 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
-/// Bastet on duty: three running frames (blink + eyes), plus a happy and a
-/// grumpy goodbye when the run settles. Pure ASCII apart from ω.
+/// Bastet on duty, art based on Joan G. Stark's cat (jgs, asciiart.eu,
+/// CC BY-SA): running frames blink and swish the tail; the goodbye is
+/// state-aware when the run settles.
 const CAT_RUNNING: [&str; 3] = [
-    r#" /\_/\
-( ^ω^ )
-  |  |
- (_| |_)"#,
-    r#" /\_/\
-( -ω- )
-  |  |
- (_| \_)"#,
-    r#" /\_/\
-( ^o^ )
-  |  |
- (\_| |_)"#,
+    r#"\    /\
+ )  ( ')
+(  /  )
+ \(__)|"#,
+    r#"\    /\
+ )  ( -)
+(  /  )
+ \(__)|"#,
+    r#"\    /\
+ )  ( ')
+(  /  )
+ \(__) /"#,
 ];
-const CAT_HAPPY: &str = r#" /\_/\
-( ^ω^ )/
-  |  |
- (_(_)"#;
-const CAT_GRUMPY: &str = r#" /\_/\
-( >ω< )!
-  |  |
- (_| |_ ///)"#;
+const CAT_HAPPY: &str = r#"\    /\
+ )  ( ') meow
+(  /  )
+ \(__) |"#;
+const CAT_GRUMPY: &str = r#"\    /\
+ )  ( T
+(  /  )
+ \(__)|!"#;
 
 fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str {
     if !settled {
         let idx = (elapsed.as_millis() / 300) as usize % CAT_RUNNING.len();
-        &CAT_RUNNING[idx]
+        CAT_RUNNING[idx]
     } else if any_failed {
         CAT_GRUMPY
     } else {
@@ -309,7 +310,7 @@ fn draw(
         let (main, cat_area) = {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(1), Constraint::Length(12)])
+                .constraints([Constraint::Min(1), Constraint::Length(14)])
                 .split(chunks[0]);
             (cols[0], cols[1])
         };
@@ -488,7 +489,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("( ^ω^ )/"), "happy cat missing: {text}");
+        assert!(text.contains("meow"), "happy cat missing: {text}");
 
         // one failure: grumpy
         let out = BepOutput {
@@ -517,7 +518,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("( >ω< )!"), "grumpy cat missing: {text}");
+        assert!(text.contains("( T"), "grumpy cat missing: {text}");
     }
 
     #[test]
