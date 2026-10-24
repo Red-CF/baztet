@@ -197,6 +197,42 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
+/// Bastet on duty: three running frames (blink + eyes), plus a happy and a
+/// grumpy goodbye when the run settles. Pure ASCII apart from ω.
+const CAT_RUNNING: [&str; 3] = [
+    r#" /\_/\
+( ^ω^ )
+  |  |
+ (_| |_)"#,
+    r#" /\_/\
+( -ω- )
+  |  |
+ (_| \_)"#,
+    r#" /\_/\
+( ^o^ )
+  |  |
+ (\_| |_)"#,
+];
+const CAT_HAPPY: &str = r#" /\_/\
+( ^ω^ )/
+  |  |
+ (_(_)"#;
+const CAT_GRUMPY: &str = r#" /\_/\
+( >ω< )!
+  |  |
+ (_| |_ ///)"#;
+
+fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str {
+    if !settled {
+        let idx = (elapsed.as_millis() / 300) as usize % CAT_RUNNING.len();
+        &CAT_RUNNING[idx]
+    } else if any_failed {
+        CAT_GRUMPY
+    } else {
+        CAT_HAPPY
+    }
+}
+
 fn draw(
     terminal: &mut Terminal<impl Backend>,
     mode: DashMode,
@@ -257,18 +293,38 @@ fn draw(
             .style(Style::new().dim()),
         );
     }
+    let settled = requested > 0 && done >= requested;
+    let any_failed = match mode {
+        DashMode::Test => out
+            .test_summaries
+            .iter()
+            .any(|s| test_style(&s.status).fg == Some(Color::Red)),
+        DashMode::Build => out.target_status.values().any(|ok| !ok),
+    };
     terminal.draw(|f| {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(f.area());
+        let (main, cat_area) = {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(1), Constraint::Length(12)])
+                .split(chunks[0]);
+            (cols[0], cols[1])
+        };
+        let cat = cat_frame(elapsed, settled, any_failed);
+        f.render_widget(
+            Paragraph::new(cat).style(Style::new().fg(Color::Yellow)),
+            cat_area,
+        );
         let table = Table::new(
             rows,
             [Constraint::Percentage(75), Constraint::Percentage(25)],
         )
         .header(Row::new(["target", "status"]).style(Style::new().bold()))
         .block(Block::bordered().title(header));
-        f.render_widget(table, chunks[0]);
+        f.render_widget(table, main);
         // live bazel progress in the footer: the console is the streaming
         // source (the BEP sidecar is written whole at exit)
         let progress = console.last_progress();
@@ -405,6 +461,63 @@ mod tests {
             .collect();
         assert!(text.contains("2/2 targets"), "header got: {text}");
         assert!(!text.contains("still running"), "leftover: {text}");
+    }
+
+    #[test]
+    fn cat_reacts_to_verdicts() {
+        // all built: happy goodbye
+        let out = BepOutput {
+            target_status: [("//a:one".to_string(), true), ("//a:two".to_string(), true)].into(),
+            ..BepOutput::default()
+        };
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        draw(
+            &mut terminal,
+            DashMode::Build,
+            &out,
+            2,
+            Duration::from_secs(3),
+            &baztet_core::exec::ConsoleCapture::default(),
+        )
+        .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("( ^ω^ )/"), "happy cat missing: {text}");
+
+        // one failure: grumpy
+        let out = BepOutput {
+            target_status: [
+                ("//a:one".to_string(), true),
+                ("//a:two".to_string(), false),
+            ]
+            .into(),
+            ..BepOutput::default()
+        };
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        draw(
+            &mut terminal,
+            DashMode::Build,
+            &out,
+            2,
+            Duration::from_secs(3),
+            &baztet_core::exec::ConsoleCapture::default(),
+        )
+        .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("( >ω< )!"), "grumpy cat missing: {text}");
     }
 
     #[test]
