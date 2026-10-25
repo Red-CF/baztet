@@ -29,6 +29,11 @@ pub async fn sync(
         Snapshot::load(&runner.workspace_root).ok()
     };
     let recorded_pkg_mtimes = existing.as_ref().and_then(|s| s.build_pkg_mtimes.clone());
+    // the previous snapshot's aspect data stays valid for every package
+    // whose BUILD did not change (their outputs sit untouched in bazel-out)
+    let recorded_ide = existing
+        .as_ref()
+        .map(|s| (s.ide_infos.clone(), s.ide_sources_meta.clone()));
 
     // one walk feeds the ladder, the delta selector and the recording
     let current_mtimes = package_build_mtimes(pv, runner.workspace_root.as_str());
@@ -36,6 +41,7 @@ pub async fn sync(
         build_mtime: current_mtimes.values().max().copied(),
         pkg_mtimes: current_mtimes.clone(),
         directories_configured: !pv.directories.entries.is_empty(),
+        derive_on: pv.derive_targets_from_directories(),
     };
 
     if let Some(existing) = existing {
@@ -102,11 +108,29 @@ pub async fn sync(
     let mut aspect_secs = None;
     let mut parsed = 0usize;
     if run_aspect_phase {
-        let (targets, delta_ran) = delta_aspect_targets(
+        let (targets, delta_ran, changed_pkgs) = delta_aspect(
             recorded_pkg_mtimes.as_ref(),
             &current_mtimes,
             &snapshot.specified_targets,
         );
+        if delta_ran {
+            // a scoped aspect run only repopulates the changed packages:
+            // seed the fresh snapshot with the carried data for everything
+            // else, or their ide entries silently vanish
+            if let Some((ide, meta)) = &recorded_ide {
+                snapshot.ide_infos = ide
+                    .iter()
+                    .filter(|(key, _)| {
+                        let pkg = key.split('!').next().unwrap_or("");
+                        let pkg = pkg.trim_start_matches("//");
+                        let pkg = pkg.split(':').next().unwrap_or(pkg);
+                        !changed_pkgs.contains(pkg)
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                snapshot.ide_sources_meta = meta.clone();
+            }
+        }
         aspect_secs =
             Some(run_aspect_phase_once(runner, pv, &mut snapshot, &targets, delta_ran).await);
         parsed = parse_count();
@@ -134,32 +158,44 @@ fn refresh_snapshot_meta(
     snapshot.bazel_binary = Some(runner.binary.clone());
 }
 
-/// Aspect-build targets. Delta mode selects only labels in packages whose
-/// BUILD changed; no recorded map, no changes, or no label matched falls
-/// back to every target — a narrower list would leave outputs missing.
-fn delta_aspect_targets(
+/// Aspect-build targets. Delta mode selects every spec that covers a
+/// package whose BUILD changed; no recorded map, no changes, or no spec
+/// matched falls back to every target — a narrower list would leave
+/// outputs missing.
+fn delta_aspect(
     recorded: Option<&BTreeMap<String, u64>>,
     current_mtimes: &BTreeMap<String, u64>,
     specs: &[String],
-) -> (Vec<String>, bool) {
+) -> (Vec<String>, bool, BTreeSet<String>) {
     let Some(recorded) = recorded.filter(|r| !r.is_empty() && !specs.is_empty()) else {
-        return (specs.to_vec(), false);
+        return (specs.to_vec(), false, Default::default());
     };
     let changed = changed_packages(recorded, current_mtimes);
-    let targets: Vec<String> = changed
+    let targets: Vec<String> = specs
         .iter()
-        .flat_map(|pkg| {
-            let prefix = format!("//{pkg}:");
-            specs
-                .iter()
-                .filter(move |s| s == &pkg || s.starts_with(&prefix))
-                .cloned()
-        })
+        .filter(|s| changed.iter().any(|pkg| spec_covers(s, pkg)))
+        .cloned()
         .collect();
     if targets.is_empty() {
-        return (specs.to_vec(), false);
+        return (specs.to_vec(), false, Default::default());
     }
-    (targets, true)
+    (targets, true, changed)
+}
+
+/// Does one spec (`//pkg:all`, `//pkg:label`, `//pkg`, `//pkg/...`) cover
+/// the package?
+fn spec_covers(spec: &str, pkg: &str) -> bool {
+    let Some(rest) = spec.strip_prefix("//") else {
+        return false;
+    };
+    if let Some((spec_pkg, _)) = rest.split_once(':') {
+        return spec_pkg == pkg;
+    }
+    if let Some(spec_pkg) = rest.strip_suffix("/...") {
+        // a subtree spec also covers the packages below it
+        return spec_pkg == pkg || pkg.starts_with(&format!("{spec_pkg}/"));
+    }
+    rest == pkg
 }
 
 /// Packages whose BUILD mtime changed or that are new vs the recorded map.

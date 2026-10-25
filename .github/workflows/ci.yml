@@ -56,11 +56,7 @@ jobs:
       # the e2e runs inside coverage: it executes the whole command stack
       # (sync/build/test/exec paths) against real Bazel, which is where the
       # coverage actually comes from
-      - name: install bazelisk as bazel
-        run: |
-          V=$(curl -sfL https://api.github.com/repos/bazelbuild/bazelisk/releases/latest | jq -r .tag_name)
-          curl -fsL "https://github.com/bazelbuild/bazelisk/releases/download/${V}/bazelisk-linux-amd64" -o /tmp/bazelisk
-          chmod +x /tmp/bazelisk && sudo install /tmp/bazelisk /usr/local/bin/bazel
+      - uses: ./.github/actions/install-bazelisk
       - run: |
           rustup component add llvm-tools-preview
           cargo install cargo-llvm-cov
@@ -103,11 +99,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: install bazelisk as bazel
-        run: |
-          V=$(curl -sfL https://api.github.com/repos/bazelbuild/bazelisk/releases/latest | jq -r .tag_name)
-          curl -fsL "https://github.com/bazelbuild/bazelisk/releases/download/${V}/bazelisk-linux-amd64" -o /tmp/bazelisk
-          chmod +x /tmp/bazelisk && sudo install /tmp/bazelisk /usr/local/bin/bazel
+      - uses: ./.github/actions/install-bazelisk
       - run: cargo test -p baztet --test integration -- --ignored
 
   build:

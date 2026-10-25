@@ -1,7 +1,6 @@
 //! The live dashboard: alt screen over the forked bazel command, with the
 //! verdict list and a cat walking beneath it while bazel works.
 
-use std::io::Read;
 use std::time::Duration;
 
 use ratatui::{
@@ -48,9 +47,8 @@ impl TuiTerminal {
     }
 
     async fn drive(&mut self, child: ExecChild, title: &str) -> anyhow::Result<ExecResult> {
-        let bep_path = child.bep_path().to_owned();
-        // clone before the move: the dashboards' live progress lives in the
-        // console capture, and the waiter task consumes the ExecChild
+        // the live progress lives in the console capture; the waiter task
+        // consumes the ExecChild (its wait() reads the sidecar from inside)
         let console = child.console_handle();
         // Option: awaiting consumes the handle; ownership back-checks the
         // early-abort path in the loop below
@@ -58,7 +56,6 @@ impl TuiTerminal {
             child.wait().await.map_err(anyhow::Error::from)
         }));
         let mut state = BepOutput::default();
-        let offset = 0usize;
         let (tw, th) = crossterm::terminal::size().unwrap_or((80, 24));
         let mut walker = WalkingCat::new(tw, th);
         // the loop breaks through several paths; if it bails out early the
@@ -112,9 +109,10 @@ impl TuiTerminal {
                                     Err(e) => Err(e.into()),
                                 };
                             }
-                            // capture what bazel wrote so far, then kill it
+                            // then kill it: the capture already holds the
+                            // live console; the sidecar only exists at
+                            // bazel's exit
                             waiter.as_ref().unwrap().abort();
-                            ingest(&mut state, &bep_path, offset);
                             break Ok(ExecResult {
                                 code: 130,
                                 bep: Some(state),
@@ -239,32 +237,30 @@ where
     Ok(())
 }
 
-/// Read and decode the BEP bytes appended since `offset`; returns the new
-/// cursor. The sidecar is written whole at bazel's exit, so this mostly
-/// serves mid-write tails and the quit path; the completed state comes
-/// from the waiter's parsed result instead.
-fn ingest(state: &mut BepOutput, path: &std::path::Path, offset: usize) -> usize {
-    use std::io::{Seek, SeekFrom};
-    if let Ok(mut f) = std::fs::File::open(path) {
-        if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
-            let mut buf = Vec::new();
-            if f.read_to_end(&mut buf).is_ok() {
-                // a truncated tail is normal mid-write: keep the old
-                // state and the cursor where it was
-                if let Ok((delta, consumed)) = baztet_core::baztet_bep::parse_prefix(&buf, 0) {
-                    state.extend(delta);
-                    return offset + consumed;
-                }
-            }
-        }
-    }
-    offset
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    /// Tail-ingest primitive, test-only: reads the sidecar from `offset`.
+    /// The live dashboard feeds from the console capture instead.
+    fn ingest(state: &mut BepOutput, path: &std::path::Path, offset: usize) -> usize {
+        use std::io::{Read, Seek, SeekFrom};
+        if let Ok(mut f) = std::fs::File::open(path) {
+            if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
+                let mut buf = Vec::new();
+                if f.read_to_end(&mut buf).is_ok() {
+                    // a truncated tail is normal mid-write: keep the old
+                    // state and the cursor where it was
+                    if let Ok((delta, consumed)) = baztet_core::baztet_bep::parse_prefix(&buf, 0) {
+                        state.extend(delta);
+                        return offset + consumed;
+                    }
+                }
+            }
+        }
+        offset
+    }
 
     #[test]
     fn dashboard_lists_verdicts_and_walks() {

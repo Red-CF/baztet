@@ -85,7 +85,7 @@ pub async fn build_cmd(
     labels: &[String],
     passthrough: Vec<String>,
 ) -> anyhow::Result<ExitCode> {
-    let ctx = Ctx::exec(cli, false, true).await?;
+    let ctx = Ctx::exec(cli, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
     let build_spec = spec(labels, passthrough);
     let result = if dashboard(cli) {
@@ -113,7 +113,7 @@ pub async fn test_cmd(
     json: bool,
     passthrough: Vec<String>,
 ) -> anyhow::Result<ExitCode> {
-    let ctx = Ctx::exec(cli, false, true).await?;
+    let ctx = Ctx::exec(cli, true).await?;
     let labels = test_labels(ctx.snapshot()?, labels, pattern)?;
     let mut test_spec = spec(labels.clone(), passthrough);
     test_spec.test_filter = filter.clone();
@@ -232,7 +232,7 @@ pub async fn run_cmd(
     label: String,
     passthrough: Vec<String>,
 ) -> anyhow::Result<ExitCode> {
-    let ctx = Ctx::exec(cli, false, false).await?;
+    let ctx = Ctx::exec(cli, false).await?;
     let result = ctx
         .runner
         .exec_run(ctx.pv(), &spec(vec![label], passthrough))
@@ -245,7 +245,7 @@ pub async fn coverage_cmd(
     labels: &[String],
     passthrough: Vec<String>,
 ) -> anyhow::Result<ExitCode> {
-    let ctx = Ctx::exec(cli, false, true).await?;
+    let ctx = Ctx::exec(cli, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
     let cov_spec = spec(labels, passthrough);
     let result = if dashboard(cli) {
@@ -253,7 +253,7 @@ pub async fn coverage_cmd(
             .runner
             .exec_coverage_fork(ctx.pv(), &cov_spec, true)
             .await?;
-        tui::run(child, "build").await?
+        tui::run(child, "coverage").await?
     } else {
         ctx.runner.exec_coverage(ctx.pv(), &cov_spec).await?
     };

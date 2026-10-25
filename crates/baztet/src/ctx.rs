@@ -19,8 +19,8 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    pub async fn exec(cli: &Cli, refresh: bool, need_snapshot: bool) -> anyhow::Result<Self> {
-        let runner = runner_for(cli, refresh).await?;
+    pub async fn exec(cli: &Cli, need_snapshot: bool) -> anyhow::Result<Self> {
+        let runner = runner_for(cli, false).await?;
         let ws = workspace_of(cli)?;
         let snapshot = if need_snapshot {
             Some(load_snapshot(ws.clone())?)
@@ -131,15 +131,26 @@ pub fn load_snapshot(ws_root: Utf8PathBuf) -> anyhow::Result<baztet_snapshot::Sn
 /// Parse a project view for binary resolution; None when it is missing or
 /// unparseable (a generated BSP view with unresolvable imports must not
 /// break every command; full parse errors surface where the PV matters).
+/// Soft only on import resolution (a generated BSP view whose imports the
+/// CLI cannot chase): everything else — typos, unknown sections — is a
+/// hard error, because silently dropping flags changes the build.
 pub fn parse_pv_soft(
     path: &Utf8PathBuf,
     ws: &Utf8PathBuf,
-) -> Option<baztet_projectview::ProjectView> {
+) -> Result<Option<baztet_projectview::ProjectView>, anyhow::Error> {
     match baztet_projectview::parse(path, ws) {
-        Ok(pv) => Some(pv),
+        Ok(pv) => Ok(Some(pv)),
         Err(e) => {
-            eprintln!("[baztet] project view at {path} unparseable ({e}); using defaults");
-            None
+            let import = matches!(
+                &e,
+                baztet_projectview::ProjectViewError::ImportFailure { .. }
+            );
+            if import {
+                eprintln!("[baztet] project view at {path}: ({e}); continuing with defaults");
+                Ok(None)
+            } else {
+                Err(e.into())
+            }
         }
     }
 }
@@ -159,12 +170,13 @@ pub fn load_pv(
         eprintln!("[baztet] no project view at {path}; running with default flags");
         return Ok(Default::default());
     }
-    // discovered views degrade to defaults when unparseable; an explicit
-    // --project-view must fail loudly instead
-    if explicit.is_none() {
-        return Ok(parse_pv_soft(&path, &runner.workspace_root).unwrap_or_default());
+    // discovered views degrade only on unresolvable imports; a typo'd
+    // section fails loudly (silently dropping flags would change the build)
+    // and an explicit --project-view always fails loudly
+    match explicit {
+        None => Ok(parse_pv_soft(&path, &runner.workspace_root)?.unwrap_or_default()),
+        Some(_) => Ok(baztet_projectview::parse(&path, &runner.workspace_root)?),
     }
-    Ok(baztet_projectview::parse(&path, &runner.workspace_root)?)
 }
 
 /// Runner plus tuning flags (`--no-output-check`) and quiet mode.
@@ -210,7 +222,8 @@ pub fn resolve_binary(cli: &Cli, ws: &Utf8PathBuf) -> String {
     match &cli.bazel {
         Some(b) => b.clone(),
         None => baztet_core::workspace::find_project_view(ws)
-            .and_then(|p| parse_pv_soft(&p, ws).map(|pv| pv.bazel_binary().to_owned()))
+            .and_then(|p| parse_pv_soft(&p, ws).ok().flatten())
+            .map(|pv| pv.bazel_binary().to_owned())
             .unwrap_or_else(|| "bazel".to_string()),
     }
 }
@@ -288,18 +301,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_pv_soft_degrades_on_bad_file() {
+    fn parse_pv_soft_policy() {
         let dir = std::env::temp_dir().join(format!("baztet-pvsoft-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let bad = Utf8PathBuf::from_path_buf(dir.join("bad.bazelproject")).unwrap();
-        std::fs::write(&bad, "targets:\n  - not a section\nunknown_section: x\n").unwrap();
         let ws = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        // unknown section errors -> soft None
-        assert!(parse_pv_soft(&bad, &ws).is_none());
-        // a valid empty view parses
+        // unknown section: a typo — hard error, flags must not silently drop
+        let bad = Utf8PathBuf::from_path_buf(dir.join("bad.bazelproject")).unwrap();
+        std::fs::write(&bad, "targets:\n  - x\nunknown_section: y\n").unwrap();
+        assert!(parse_pv_soft(&bad, &ws).is_err());
+        // valid view parses
         let good = Utf8PathBuf::from_path_buf(dir.join("good.bazelproject")).unwrap();
         std::fs::write(&good, "build_flags:\n").unwrap();
-        assert!(parse_pv_soft(&good, &ws).is_some());
+        assert!(parse_pv_soft(&good, &ws).unwrap().is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

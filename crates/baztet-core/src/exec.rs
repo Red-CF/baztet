@@ -132,8 +132,10 @@ impl BazelRunner {
         common_flags(&mut argv, false);
         argv.extend(pv.build_flags.iter().cloned());
         let bep_file = temp_bep_file();
-        // BEP flags BEFORE the label: postpositional args go to the binary
+        // BEP + tuning flags BEFORE the label: postpositional args go to
+        // the binary, so bazel-side flags must never land after it
         bep_flags(&bep_file, &mut argv);
+        argv.extend(self.tuning_flags.iter().cloned());
         argv.extend(spec.labels.iter().cloned());
         argv.extend(spec.extra_args.iter().cloned());
 
@@ -146,9 +148,6 @@ impl BazelRunner {
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
         cmd.envs(&spec.env);
-        if !self.tuning_flags.is_empty() {
-            cmd.args(&self.tuning_flags);
-        }
         let mut child = cmd.spawn()?;
         let status = child.wait().await?;
         let bep = read_bep_or_none(&bep_file)?;

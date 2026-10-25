@@ -1,0 +1,9 @@
+name: install-bazelisk
+description: Pinned bazelisk as the `bazel` command (reproducible: no anonymous API lookups)
+runs:
+  using: composite
+  steps:
+    - run: |
+        curl -fsL "https://github.com/bazelbuild/bazelisk/releases/download/v1.28.1/bazelisk-linux-amd64" -o /tmp/bazelisk
+        chmod +x /tmp/bazelisk && sudo install /tmp/bazelisk /usr/local/bin/bazel
+      shell: bash
