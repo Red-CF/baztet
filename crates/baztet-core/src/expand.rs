@@ -14,8 +14,8 @@ const SKIP_DIRS: [&str; 6] = [
     "bazel-out",
 ];
 
-/// Expand `directories:` into specs: shared walk, two public consumers.
-fn walk_specs(pv: &ProjectView, workspace_root: &str) -> (Vec<String>, BTreeMap<String, u64>) {
+/// Expand `directories:` into specs: shared walk, public consumers.
+pub fn walk_specs(pv: &ProjectView, workspace_root: &str) -> (Vec<String>, BTreeMap<String, u64>) {
     if !pv.derive_targets_from_directories() {
         return (vec![], BTreeMap::new());
     }

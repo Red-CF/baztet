@@ -9,8 +9,8 @@ use baztet_snapshot::Snapshot;
 
 use crate::aspect::{self, AspectConfig, Rules};
 use crate::bazel::{BazelError, BazelRunner};
-use crate::expand::package_build_mtimes;
-pub use crate::query::{batch_specs, target_specs, DEFAULT_SHARD_SIZE};
+
+pub use crate::query::{batch_specs, target_specs, target_specs_with_mtimes, DEFAULT_SHARD_SIZE};
 pub use crate::reuse::{decide_reuse, sync_fingerprint, CurrentFacts, RecordedFacts, Reuse};
 
 /// Full sync; `run_aspect_phase=false` stops after the query phase, `force_full` skips the reuse ladder.
@@ -36,7 +36,7 @@ pub async fn sync(
         .map(|s| (s.ide_infos.clone(), s.ide_sources_meta.clone()));
 
     // one walk feeds the ladder, the delta selector and the recording
-    let current_mtimes = package_build_mtimes(pv, runner.workspace_root.as_str());
+    let (specs, current_mtimes) = target_specs_with_mtimes(pv, runner.workspace_root.as_str());
     let current = CurrentFacts {
         build_mtime: current_mtimes.values().max().copied(),
         pkg_mtimes: current_mtimes.clone(),
@@ -93,8 +93,6 @@ pub async fn sync(
             Reuse::FullQuery => {}
         }
     }
-    let specs = target_specs(pv, runner.workspace_root.as_str());
-
     // full path: query, then optional aspect phase
     let (graph, query_failed) = crate::query::query_graph(runner, pv, &specs).await?;
     let query_secs = t0.elapsed().as_secs_f64();

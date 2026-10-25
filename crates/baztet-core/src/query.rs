@@ -1,23 +1,32 @@
 //! Phase 1: `bazel query` -> target graph, with lexicographic batching and
 //! OOM halving (mirrors the plugin's sharder).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use baztet_projectview::ProjectView;
 use baztet_protos::blaze_query;
 use baztet_snapshot::TargetGraph;
 
 use crate::bazel::{BazelError, BazelRunner};
-use crate::expand::{expand_directory_targets, label_is_excluded};
+use crate::expand::label_is_excluded;
 
-/// Query specs: project view `targets:` + derived `directories:` packages.
-pub fn target_specs(pv: &ProjectView, workspace_root: &str) -> Vec<String> {
+/// Query specs + the per-package BUILD mtimes from the SAME walk.
+pub fn target_specs_with_mtimes(
+    pv: &ProjectView,
+    workspace_root: &str,
+) -> (Vec<String>, BTreeMap<String, u64>) {
+    let (expanded, mtimes) = crate::expand::walk_specs(pv, workspace_root);
     let mut specs = pv.targets.includes.clone();
-    specs.extend(expand_directory_targets(pv, workspace_root).0);
+    specs.extend(expanded);
     // dedupe, keep order
     let mut seen = std::collections::HashSet::new();
     specs.retain(|s| seen.insert(s.clone()));
-    specs
+    (specs, mtimes)
+}
+
+/// Query specs: project view `targets:` + derived `directories:` packages.
+pub fn target_specs(pv: &ProjectView, workspace_root: &str) -> Vec<String> {
+    target_specs_with_mtimes(pv, workspace_root).0
 }
 
 fn query_expression(specs: &[String]) -> String {
