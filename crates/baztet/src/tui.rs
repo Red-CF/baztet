@@ -197,50 +197,73 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
-/// Bastet, tight-block design: a 7-wide face (the classic proportions)
-/// with continuous seams down the body — shoulders, collar, paws — and a
-/// swishing tail. The eyes carry the motion: alert, blink, side-glance,
-/// content squint.
+/// Bastet V2, with volume: the skull widens under the ears and the
+/// cheeks flare wider than the eyes (a real 3D head profile), Bastet's
+/// muzzle ω with whiskers attached to the cheeks, and a ground-shadow row
+/// rendered dark below the body. Motion: the eyes change per frame and
+/// the tail swishes between four positions.
 const CAT_RUNNING: [&str; 4] = [
-    r#" /\_/\
-( o.o )
- > ^ <
-/ | | \
-| |*| |
-(_: |__)"#,
-    r#" /\_/\
-( -.- )
- > ^ <
-/ | | \
-| |*| |
-(_:  \_)"#,
-    r#" /\_/\
-( o.O )
- > ^ <
-/ | | \
-| |*| |
-(_: |__)""#,
-    r#" /\_/\
-( ^.^ )
- > w <
-/ | | \
-| |*| |
-(_:  |_)""#,
+    r#"    /\_/\
+   / o o \
+ =(  ω  )=
+   \___/
+  /|    |\
+ ( |*==*| )
+  \|    |_|
+ (__|  |__)""#,
+    r#"    /\_/\
+   / - - \
+ =(  ω  )=
+   \___/
+  /|    |\
+ ( |*==*| )
+  \|    |_|
+ (__/  \__)""#,
+    r#"    /\=/\
+   / o O \
+ =(  ω  )=
+   \___/
+  /|    |\
+ ( |*==*| )
+  \|    |_|
+ (\_|  |__)""#,
+    r#"    /\_/\
+   / ^ ^ \
+ =(  ω  )=
+   \___/
+  /|    |\
+ ( |*==*| )
+  \|    |_|
+ (_/    \_)""#,
 ];
-const CAT_HAPPY: &str = r#" /\_/\ *
-( ^^^ )
- > ω <
-/ | | \
-| |*| |~
-(__|__)
-  ~ meow ~"#;
-const CAT_GRUMPY: &str = r#" /\_/\
-( x.x )
- >___<
-/ | | \
-| |*| |:(  
-(_: \__)
- ~grumpy~"#;
+const CAT_HAPPY: &str = r#"    /\_/\
+   / ^ ^ \
+ =(  ω  )=
+   \___/
+  /|    |\
+ ( |*==*| )~
+  \|    |_|
+ (__/‾‾\__)
+   ~ meow ~""#;
+const CAT_HAPPY_SHADOW: &str = "      ~ ~~";
+const CAT_GRUMPY: &str = r#"    /\_/\
+   / x x \
+ =( ____ )?
+   \___/
+  /|    |\
+ ( |*==*| ):(
+  \|    |_|
+ (\|__|__)
+   ~ grumpy ~""#;
+const CAT_GRUMPY_SHADOW: &str = "      ~ ~~";
+
+fn cat_shadow(settled: bool) -> &'static str {
+    if settled {
+        CAT_HAPPY_SHADOW
+    } else {
+        CAT_GRUMPY_SHADOW
+    }
+}
 
 fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str {
     if !settled {
@@ -338,9 +361,22 @@ where
             (cols[0], cols[1])
         };
         let cat = cat_frame(elapsed, settled, any_failed);
+        let shadow = cat_shadow(settled);
+        // art above, dark shadow line below: the ground grounds the cat
+        let (cat_zone, shadow_zone) = {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(cat_area);
+            (rows[0], rows[1])
+        };
         f.render_widget(
             Paragraph::new(cat).style(Style::new().fg(Color::Yellow)),
-            cat_area,
+            cat_zone,
+        );
+        f.render_widget(
+            Paragraph::new(shadow).style(Style::new().dim()),
+            shadow_zone,
         );
         let table = Table::new(
             rows,
@@ -567,7 +603,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(
-            text.contains("> ω <") && text.contains("meow"),
+            text.contains("(  ω  )") && text.contains("meow"),
             "happy cat missing: {text}"
         );
 
@@ -599,7 +635,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(
-            text.contains("( x.x )") && text.contains("grumpy"),
+            text.contains("( ____ )") && text.contains("grumpy"),
             "grumpy cat missing: {text}"
         );
     }
