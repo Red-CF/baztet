@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-baztet-protos = { path = "../baztet-protos", version = "1.2.1" }
+baztet-protos = { path = "../baztet-protos", version = "1.2.2" }
 prost.workspace = true
 thiserror.workspace = true
 camino.workspace = true
