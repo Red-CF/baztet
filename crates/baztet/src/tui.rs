@@ -262,15 +262,19 @@ where
             .constraints([Constraint::Min(1), Constraint::Length(3 + sprite_h)])
             .split(f.area());
 
-        // verdict list: the active target first, failures first after it
+        // verdict list: the active target first, failures first after it.
+        // one capture + one pass per line: text() copies the 256 KiB tail
+        // and the strip reads the same numbers below
+        let console_text = console.text();
         let mut fraction: Option<(u64, u64)> = None;
         let mut active: Option<String> = None;
-        for line in console.text().lines().rev() {
+        for line in console_text.lines().rev() {
+            let (f, a) = parse_status(line);
             if fraction.is_none() {
-                fraction = parse_status(line).0;
+                fraction = f;
             }
             if active.is_none() {
-                active = parse_status(line).1;
+                active = a;
             }
         }
         let mut rows: Vec<Line> = Vec::new();
@@ -328,12 +332,10 @@ where
         } else {
             MARKS[(elapsed.as_millis() / 400) as usize % MARKS.len()]
         };
+        // the walk's status: the active target when there is one, else
+        // the raw last line — from the capture already parsed above
         let raw_progress = console.last_progress();
-        let (_, line_active) = parse_status(&raw_progress);
-        let shown = match line_active {
-            Some(a) => a,
-            None => raw_progress,
-        };
+        let shown = active.unwrap_or(raw_progress);
         let (tw, _) = crossterm::terminal::size().unwrap_or((80, 24));
         let max_width = tw.saturating_sub(16) as usize;
         let shown: String = shown.chars().take(max_width).collect();
@@ -487,5 +489,60 @@ mod tests {
         assert_eq!(off3, off2);
         assert_eq!(state.server_pid, Some(5));
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    #[test]
+    fn parse_status_finds_the_fraction_and_the_building_target() {
+        let line = "(18:47:49) [3,101 / 4,278] 19 / 432 tests, 2 failed; Building pkg/dx/agents/bff/services/customers-api/liball-external-targets-class.jar (2218 source files); 13s";
+        let (fraction, active) = parse_status(line);
+        assert_eq!(fraction, Some((3101, 4278)));
+        assert_eq!(active.as_deref(), Some("Building pkg/dx/agents/bff/services/customers-api/liball-external-targets-class.jar"));
+    }
+
+    #[test]
+    fn parse_status_testing_and_misses() {
+        let (f, a) = parse_status(
+            "(16:04:08) INFO: Analyzed 432 targets (0 packages loaded, 0 targets configured).",
+        );
+        assert_eq!(f, None);
+        assert_eq!(a, None);
+        let (_, a) = parse_status("Testing //pkg/dx/agents/bff/libs/cache-client:tests");
+        assert_eq!(
+            a.as_deref(),
+            Some("Testing //pkg/dx/agents/bff/libs/cache-client:tests")
+        );
+    }
+
+    #[test]
+    fn bar_fill_math_and_track() {
+        let bar = bar_line(Some((2101, 4278)), 40);
+        // span widths in CHARS — ─/━ are 3-byte UTF-8, don't compare bytes
+        let span_widths: Vec<usize> = bar
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .collect();
+        assert_eq!(span_widths, vec![20, 20]);
+        // empty track when no fraction
+        let track = bar_line(None, 40);
+        assert_eq!(track.spans[0].content.chars().count(), 40);
+        // zero total = track
+        let track = bar_line(Some((5, 0)), 40);
+        assert_eq!(track.spans[0].content.chars().count(), 40);
+    }
+
+    #[test]
+    fn verdict_styles_map() {
+        assert_eq!(verdict_style("PASSED").fg, Some(Color::Green));
+        assert_eq!(verdict_style("BUILT").fg, Some(Color::Green));
+        assert_eq!(verdict_style("FAILED").fg, Some(Color::Red));
+        assert_eq!(verdict_style("TIMEOUT").fg, Some(Color::Red));
+        assert_eq!(verdict_style("FLAKY").fg, Some(Color::Yellow));
+        assert_eq!(verdict_style("NO_STATUS").fg, Some(Color::Gray));
     }
 }
