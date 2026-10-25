@@ -11,9 +11,9 @@ homepage.workspace = true
 [dependencies]
 mimalloc.workspace = true
 owo-colors = { workspace = true, features = ["supports-colors"] }
-baztet-core = { path = "../baztet-core", version = "1.4.0" }
-baztet-projectview = { path = "../baztet-projectview", version = "1.4.0" }
-baztet-snapshot = { path = "../baztet-snapshot", version = "1.4.0" }
+baztet-core = { path = "../baztet-core", version = "1.3.1" }
+baztet-projectview = { path = "../baztet-projectview", version = "1.3.1" }
+baztet-snapshot = { path = "../baztet-snapshot", version = "1.3.1" }
 clap = { version = "4", features = ["derive", "env"] }
 ratatui.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }

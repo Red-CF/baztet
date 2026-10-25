@@ -11,9 +11,9 @@ pub const SHEET: &str = include_str!("sprites/gato_silueta.txt");
 /// Sprite sizes, wide to narrow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpriteSize {
-    Large,  // 31x11
-    Medium, // 25x8
-    Small,  // 17x6
+    Large,  // 32x12
+    Medium, // 24x9
+    Small,  // 18x7
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,9 +26,9 @@ impl SpriteSize {
     /// Grid size of this sprite: (width, height).
     pub fn dims(self) -> (u16, u16) {
         match self {
-            SpriteSize::Large => (31, 11),
-            SpriteSize::Medium => (25, 8),
-            SpriteSize::Small => (17, 6),
+            SpriteSize::Large => (32, 12),
+            SpriteSize::Medium => (24, 9),
+            SpriteSize::Small => (18, 7),
         }
     }
 
@@ -63,9 +63,9 @@ fn parse_sheet() -> HashMap<(SpriteSize, Direction), Vec<Frame>> {
                 })
                 .unwrap_or((None, None));
             let size = match (w, h) {
-                (Some(31), Some(11)) => Some(SpriteSize::Large),
-                (Some(25), Some(8)) => Some(SpriteSize::Medium),
-                (Some(17), Some(6)) => Some(SpriteSize::Small),
+                (Some(32), Some(12)) => Some(SpriteSize::Large),
+                (Some(24), Some(9)) => Some(SpriteSize::Medium),
+                (Some(18), Some(7)) => Some(SpriteSize::Small),
                 _ => None,
             };
             let dir = match parts.next() {
