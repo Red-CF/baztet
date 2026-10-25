@@ -197,50 +197,50 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
-/// Custom Bastet design, tight proportions (the classic face the
-/// terminal reads well) with depth: whiskers, the jewelled collar, and a
-/// tail that swishes per frame. Eyes carry the motion: alert, blink,
-/// side-glance, content squint.
+/// Bastet, tight-block design: a 7-wide face (the classic proportions)
+/// with continuous seams down the body — shoulders, collar, paws — and a
+/// swishing tail. The eyes carry the motion: alert, blink, side-glance,
+/// content squint.
 const CAT_RUNNING: [&str; 4] = [
-    r#"  /\_/\
-=( o.o )=
-  > ^ <
-   | |
- ( |*=*| )
- (\_| |_)  "#,
-    r#"  /\_/\
-=( -.- )=
-  > ^ <
-   | |
- ( |*=*| )
-(_|   |_)"#,
-    r#"  /\_/\
-=( o.O )=
-  > ^ <
-   | |
- ( |*=*| )
-(__| |_)  "#,
-    r#"  /\_/\
-=( ^.^. )=
-  > w <
-   | |
- ( |*=*| )
- (\_/ \_)"#,
+    r#" /\_/\
+( o.o )
+ > ^ <
+/ | | \
+| |*| |
+(_: |__)"#,
+    r#" /\_/\
+( -.- )
+ > ^ <
+/ | | \
+| |*| |
+(_:  \_)"#,
+    r#" /\_/\
+( o.O )
+ > ^ <
+/ | | \
+| |*| |
+(_: |__)""#,
+    r#" /\_/\
+( ^.^ )
+ > w <
+/ | | \
+| |*| |
+(_:  |_)""#,
 ];
-const CAT_HAPPY: &str = r#"  /\_/\
-=( ^.^ )=
-  > ω <
-   | |
- ( |*=*| ) ~
- (\_/ \_)
+const CAT_HAPPY: &str = r#" /\_/\ *
+( ^^^ )
+ > ω <
+/ | | \
+| |*| |~
+(__|__)
   ~ meow ~"#;
-const CAT_GRUMPY: &str = r#"  /\_/\
-=( x.x )=
-  >___<
-   | |
- ( |*=*| ):(
- (__| |__)
-  ~grumpy~"#;
+const CAT_GRUMPY: &str = r#" /\_/\
+( x.x )
+ >___<
+/ | | \
+| |*| |:(  
+(_: \__)
+ ~grumpy~"#;
 
 fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str {
     if !settled {
@@ -333,7 +333,7 @@ where
         let (main, cat_area) = {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(1), Constraint::Length(13)])
+                .constraints([Constraint::Min(1), Constraint::Length(11)])
                 .split(chunks[0]);
             (cols[0], cols[1])
         };
@@ -566,8 +566,10 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("> ω <"), "happy mouth missing: {text}");
-        assert!(text.contains(") ~"), "happy collar tail missing: {text}");
+        assert!(
+            text.contains("> ω <") && text.contains("meow"),
+            "happy cat missing: {text}"
+        );
 
         // one failure: grumpy
         let out = BepOutput {
@@ -596,7 +598,10 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("( x.x )"), "grumpy cat missing: {text}");
+        assert!(
+            text.contains("( x.x )") && text.contains("grumpy"),
+            "grumpy cat missing: {text}"
+        );
     }
 
     #[test]
