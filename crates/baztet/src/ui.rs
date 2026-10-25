@@ -71,7 +71,18 @@ pub fn present_exec(command: &str, result: &ExecResult, show_status: bool) {
         ));
     }
     if result.code == 0 && show_status {
-        ok(&format!("{command} ok ({:.1}s)", result.secs));
+        // build/coverage: the verdict plus how much came out of bazel
+        let built = result
+            .bep
+            .as_ref()
+            .map(|b| b.target_status.len())
+            .unwrap_or(0);
+        let counts = if built > 0 {
+            format!(" · {built} target(s)")
+        } else {
+            String::new()
+        };
+        ok(&format!("{command} ok ({:.1}s){counts}", result.secs));
     }
     if result.code != 0 {
         // both streams can carry the diagnosis (bazel splits by version);
