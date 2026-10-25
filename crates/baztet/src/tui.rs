@@ -14,7 +14,7 @@ use ratatui::{
     Terminal,
 };
 
-use crate::sprites::GatoPaseando;
+use crate::sprites::WalkingCat;
 use baztet_core::baztet_bep::BepOutput;
 use baztet_core::exec::{ExecChild, ExecResult};
 
@@ -60,7 +60,7 @@ impl TuiTerminal {
         let mut state = BepOutput::default();
         let offset = 0usize;
         let (tw, th) = crossterm::terminal::size().unwrap_or((80, 24));
-        let mut gato = GatoPaseando::new(tw, th);
+        let mut walker = WalkingCat::new(tw, th);
         // the loop breaks through several paths; if it bails out early the
         // waiter still owns the live Child — aborting drops the Child and
         // kill_on_drop terminates bazel
@@ -81,7 +81,7 @@ impl TuiTerminal {
                 let _ = draw(
                     &mut self.terminal,
                     &state,
-                    gato.as_ref(),
+                    walker.as_ref(),
                     &console,
                     title,
                     true,
@@ -124,18 +124,18 @@ impl TuiTerminal {
                     }
                     Ok(crossterm::event::Event::Resize(w, h)) => {
                         // re-pick the sprite size; never panic on odd sizes
-                        gato = GatoPaseando::new(w, h);
+                        walker = WalkingCat::new(w, h);
                     }
                     _ => {}
                 }
             }
-            if let Some(g) = gato.as_mut() {
+            if let Some(g) = walker.as_mut() {
                 g.tick();
             }
             draw(
                 &mut self.terminal,
                 &state,
-                gato.as_ref(),
+                walker.as_ref(),
                 &console,
                 title,
                 false,
@@ -168,7 +168,7 @@ fn restore() {
 fn draw<B>(
     terminal: &mut Terminal<B>,
     out: &BepOutput,
-    gato: Option<&GatoPaseando>,
+    walker: Option<&WalkingCat>,
     console: &baztet_core::exec::ConsoleCapture,
     title: &str,
     settled: bool,
@@ -178,7 +178,7 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     terminal.draw(|f| {
-        let sprite_h = gato.map(|g| g.tamano.dims().1).unwrap_or(0);
+        let sprite_h = walker.map(|g| g.size.dims().1).unwrap_or(0);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(2 + sprite_h)])
@@ -208,11 +208,13 @@ where
             console.last_progress(),
             Style::new().dim(),
         ))];
-        if let Some(gato) = gato {
-            for l in gato.frame_lines() {
+        if let Some(walker) = walker {
+            for l in walker.frame_lines() {
                 strip.push(Line::from(Span::styled(
                     l.clone(),
-                    Style::new().fg(Color::Rgb(0x3C, 0xA0, 0xFF)),
+                    // the sprite wears the Bastet gold the dashboard's frame already wears;
+                    // a single color for all cells keeps the density-shading effect intact
+                    Style::new().fg(Color::Rgb(0xE5, 0xC0, 0x6B)),
                 )));
             }
         } else {
@@ -276,11 +278,11 @@ mod tests {
 
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let gato = GatoPaseando::new(80, 20).unwrap();
+        let walker = WalkingCat::new(80, 20).unwrap();
         draw(
             &mut terminal,
             &out,
-            Some(&gato),
+            Some(&walker),
             &baztet_core::exec::ConsoleCapture::default(),
             "test",
             true,
@@ -301,9 +303,9 @@ mod tests {
     #[test]
     fn sprite_size_falls_back_on_narrow_terminals() {
         // nothing fits: the animation omits itself, no broken draw
-        assert!(GatoPaseando::new(20, 10).is_none());
+        assert!(WalkingCat::new(20, 10).is_none());
         // small fits
-        assert!(GatoPaseando::new(30, 15).is_some());
+        assert!(WalkingCat::new(30, 15).is_some());
     }
 
     #[test]
