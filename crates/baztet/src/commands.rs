@@ -181,8 +181,12 @@ pub async fn test_cmd(
             );
         }
         if failed {
+            // per-target rows only for the verdicts that explain the exit:
+            // the passing N targets live in the totals line
             for (label, status) in &per_target {
-                println!("{}  {label}", ui::test_status_colored(status));
+                if status.as_str() != "PASSED" {
+                    println!("{}  {label}", ui::test_status_colored(status));
+                }
             }
         }
         if failed && cases {
