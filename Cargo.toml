@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.1"
+version = "1.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Red-CF/baztet"
@@ -30,13 +30,13 @@ zstd = "0.14"
 thiserror = "2"
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
-sha2 = "0.10"
+sha2 = "0.11"
 quick-xml = "0.42"
 rayon = "1"
 mimalloc = "0.1"
 owo-colors = "4"
-indicatif = "0.17"
-ratatui = "0.29"
+indicatif = "0.18"
+ratatui = "0.30"
 
 [profile.release]
 lto = true

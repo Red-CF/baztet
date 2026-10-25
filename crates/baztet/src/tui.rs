@@ -5,7 +5,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     crossterm,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style, Stylize},
+    style::{Color, Style},
     widgets::{Block, Cell, Paragraph, Row, Table},
     Terminal,
 };
@@ -197,53 +197,50 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
-/// Custom Bastet design: eyes per frame (alert, blink, side-glance,
-/// content squint), Bastet's jewelled collar, whiskers, and a tail that
-/// swishes across the frames; goodbyes are state-aware.
+/// Custom Bastet design, tight proportions (the classic face the
+/// terminal reads well) with depth: whiskers, the jewelled collar, and a
+/// tail that swishes per frame. Eyes carry the motion: alert, blink,
+/// side-glance, content squint.
 const CAT_RUNNING: [&str; 4] = [
-    r#" /\_/\
-(  o.o  )
-   > ^ <
-  /|   |\
+    r#"  /\_/\
+=( o.o )=
+  > ^ <
+   | |
  ( |*=*| )
-  \_|   |_/
- (_/   \_)"#,
-    r#" /\_/\
-(  -.-  )
-   > ^ <
-  /|   |\
+ (\_| |_)  "#,
+    r#"  /\_/\
+=( -.- )=
+  > ^ <
+   | |
  ( |*=*| )
-  \_|   |_/
- (__\ /__)"#,
-    r#" /\_/\
-(  o.O  )
-   > ^ <
-  /|   |\
+(_|   |_)"#,
+    r#"  /\_/\
+=( o.O )=
+  > ^ <
+   | |
  ( |*=*| )
-  \_|   |_/
-   (_/__)"#,
-    r#" /\_/\
-(  ^.^. )
-   > ^ <
-  /|   |\
+(__| |_)  "#,
+    r#"  /\_/\
+=( ^.^. )=
+  > w <
+   | |
  ( |*=*| )
-  \_|   |_/
- (_/ \_)"#,
+ (\_/ \_)"#,
 ];
-const CAT_HAPPY: &str = r#" /\_/\
-(  ^.^  )
-   > ω <
-  /|   |\
+const CAT_HAPPY: &str = r#"  /\_/\
+=( ^.^ )=
+  > ω <
+   | |
  ( |*=*| ) ~
-  \_/ \_/
-~(__/ \__)~"#;
-const CAT_GRUMPY: &str = r#" /\_/\
-(  x.x  )
-   >___<
-  /|   |\
+ (\_/ \_)
+  ~ meow ~"#;
+const CAT_GRUMPY: &str = r#"  /\_/\
+=( x.x )=
+  >___<
+   | |
  ( |*=*| ):(
-  \_|   |_/
- (__| |__)"#;
+ (__| |__)
+  ~grumpy~"#;
 
 fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str {
     if !settled {
@@ -256,14 +253,18 @@ fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str
     }
 }
 
-fn draw(
-    terminal: &mut Terminal<impl Backend>,
+fn draw<B>(
+    terminal: &mut Terminal<B>,
     mode: DashMode,
     out: &BepOutput,
     requested: usize,
     elapsed: Duration,
     console: &baztet_core::exec::ConsoleCapture,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let (done, mut rows): (usize, Vec<Row>) = match mode {
         DashMode::Test => {
             let rows: Vec<Row> = out
@@ -345,8 +346,13 @@ fn draw(
             rows,
             [Constraint::Percentage(75), Constraint::Percentage(25)],
         )
-        .header(Row::new(["target", "status"]).style(Style::new().bold()))
-        .block(Block::bordered().title(header));
+        .header(Row::new(["target", "status"]).style(Style::new().bold().fg(Color::Yellow)))
+        .block(
+            Block::bordered()
+                .title(header)
+                .title_style(Style::new().bold().fg(Color::Yellow))
+                .border_style(Style::new().fg(Color::DarkGray)),
+        );
         f.render_widget(table, main);
         // live bazel progress in the footer: the console is the streaming
         // source (the BEP sidecar is written whole at exit)
@@ -356,7 +362,7 @@ fn draw(
         } else {
             format!("q cancels bazel · {progress}")
         };
-        f.render_widget(Paragraph::new(footer), chunks[1]);
+        f.render_widget(Paragraph::new(footer).style(Style::new().dim()), chunks[1]);
     })?;
     Ok(())
 }
@@ -590,7 +596,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("(  x.x  )"), "grumpy cat missing: {text}");
+        assert!(text.contains("( x.x )"), "grumpy cat missing: {text}");
     }
 
     #[test]
