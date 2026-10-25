@@ -1,5 +1,5 @@
 name: install-bazelisk
-description: Pinned bazelisk as the `bazel` command (reproducible: no anonymous API lookups)
+description: 'Pinned bazelisk installed as the bazel command; reproducible, no API lookups'
 runs:
   using: composite
   steps:
