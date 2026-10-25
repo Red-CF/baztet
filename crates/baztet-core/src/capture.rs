@@ -3,8 +3,8 @@
 //! tail. Bazel buffers the BEP sidecar and writes it whole at exit, so this
 //! — not the sidecar — is the only streaming data source.
 
-use tokio::io::AsyncReadExt;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 
 /// Bounded shared buffer for one command's console output.
 #[derive(Clone, Default)]
