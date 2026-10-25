@@ -214,3 +214,118 @@ pub fn resolve_binary(cli: &Cli, ws: &Utf8PathBuf) -> String {
             .unwrap_or_else(|| "bazel".to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use baztet_snapshot::Snapshot;
+    use camino::Utf8PathBuf;
+    use clap::Parser;
+
+    #[test]
+    fn exit_code_maps_into_u8() {
+        assert_eq!(exit_code(0), ExitCode::SUCCESS);
+        assert_eq!(exit_code(3), ExitCode::from(3u8));
+        assert_eq!(exit_code(-1), ExitCode::FAILURE);
+        assert_eq!(exit_code(300), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn spec_builds_exec_spec() {
+        let s = spec(vec!["//a:b".into()], vec!["--x".into()]);
+        assert_eq!(s.labels, ["//a:b"]);
+        assert_eq!(s.extra_args, ["--x"]);
+        assert!(s.test_filter.is_none());
+    }
+
+    #[test]
+    fn label_helpers_pick_snapshot_defaults() {
+        let mut snap = Snapshot::new("/ws".into());
+        snap.specified_targets = vec!["//a:all".into()];
+        assert_eq!(
+            default_labels(&snap, &[]).unwrap(),
+            vec!["//a:all".to_string()]
+        );
+        assert_eq!(
+            default_labels(&snap, &["//b".into()]).unwrap(),
+            ["//b".to_string()]
+        );
+        // empty explicit labels and empty snapshot -> helpful error
+        let empty = Snapshot::new("/ws".into());
+        assert!(default_labels(&empty, &[]).is_err());
+    }
+
+    #[test]
+    fn test_labels_direct_pattern_and_miss() {
+        let mut snap = Snapshot::new("/ws".into());
+        let _ = snap
+            .graph
+            .get_or_insert("//a:unit_test", "sh_test", None, vec![]);
+        let _ = snap
+            .graph
+            .get_or_insert("//a:lib", "java_library", None, vec![]);
+        // explicit labels win
+        assert_eq!(
+            test_labels(&snap, &["//x:y".into()], &None).unwrap(),
+            ["//x:y".to_string()]
+        );
+        // default: only *_test targets
+        let defaults = test_labels(&snap, &[], &None).unwrap();
+        assert_eq!(defaults, ["//a:unit_test".to_string()]);
+        // pattern matches subset
+        assert_eq!(
+            test_labels(&snap, &[], &Some("unit".into())).unwrap(),
+            ["//a:unit_test".to_string()]
+        );
+        // pattern with no match
+        assert!(test_labels(&snap, &[], &Some("nope".into())).is_err());
+        // no tests in snapshot
+        let mut snap2 = Snapshot::new("/ws".into());
+        let _ = snap2
+            .graph
+            .get_or_insert("//a:lib", "java_library", None, vec![]);
+        assert!(test_labels(&snap2, &[], &None).is_err());
+    }
+
+    #[test]
+    fn parse_pv_soft_degrades_on_bad_file() {
+        let dir = std::env::temp_dir().join(format!("baztet-pvsoft-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = Utf8PathBuf::from_path_buf(dir.join("bad.bazelproject")).unwrap();
+        std::fs::write(&bad, "targets:\n  - not a section\nunknown_section: x\n").unwrap();
+        let ws = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        // unknown section errors -> soft None
+        assert!(parse_pv_soft(&bad, &ws).is_none());
+        // a valid empty view parses
+        let good = Utf8PathBuf::from_path_buf(dir.join("good.bazelproject")).unwrap();
+        std::fs::write(&good, "build_flags:\n").unwrap();
+        assert!(parse_pv_soft(&good, &ws).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_binary_chain() {
+        let pv = Cli::parse_from(["baztet", "--bazel", "/custom/bazel", "doctor"]);
+        let ws = Utf8PathBuf::from("/ws");
+        assert_eq!(resolve_binary(&pv, &ws), "/custom/bazel");
+        // no --bazel, no PV -> plain bazel
+        let cli = Cli::parse_from(["baztet", "doctor"]);
+        assert_eq!(
+            resolve_binary(&cli, &Utf8PathBuf::from("/nonexistent-ws")),
+            "bazel"
+        );
+    }
+
+    #[test]
+    fn workspace_of_cli_and_default() {
+        // explicit --workspace wins
+        let cli = Cli::parse_from(["baztet", "--workspace", "/tmp/nowhere-baztet", "doctor"]);
+        assert_eq!(workspace_of(&cli).unwrap().as_str(), "/tmp/nowhere-baztet");
+        // no flag: nearest workspace above CWD. Only asserted when the test
+        // process itself runs inside a workspace (the repo root has none,
+        // and CWD cannot be changed safely under parallel tests)
+        if let Ok(found) = workspace_of(&Cli::parse_from(["baztet", "doctor"])) {
+            assert!(baztet_core::workspace::find_workspace_root(&found).is_some());
+        }
+    }
+}

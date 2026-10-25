@@ -403,6 +403,55 @@ mod tests {
     }
 
     #[test]
+    fn ingest_reads_appended_frames() {
+        use std::io::Write;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let path = std::env::temp_dir().join(format!(
+            "baztet-ingest-{}.bin",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut f = std::fs::File::create(&path).unwrap();
+        // frame 1 written first; ingest at offset 0 → whole state
+        let frame1 = build_started_frame();
+        f.write_all(&frame1).unwrap();
+        f.sync_all().unwrap();
+        let mut state = BepOutput::default();
+        let off = ingest(&mut state, &path, 0);
+        assert_eq!(off, frame1.len());
+        assert_eq!(state.server_pid, Some(4242));
+
+        // frame 2 appended; ingesting from the cursor picks up only the tail
+        let frame2 = build_started_frame2();
+        f.write_all(&frame2).unwrap();
+        f.sync_all().unwrap();
+        let off2 = ingest(&mut state, &path, off);
+        assert_eq!(off2, frame1.len() + frame2.len());
+        // the last Started event wins, as in a real rebuild
+        assert_eq!(state.server_pid, Some(5));
+
+        // a truncated tail stops the cursor without error and keeps state
+        f.write_all(&frame1[..3]).unwrap();
+        f.sync_all().unwrap();
+        let off3 = ingest(&mut state, &path, off2);
+        assert_eq!(off3, off2);
+        // truncated tail: the previous state stands
+        assert_eq!(state.server_pid, Some(5));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn build_started_frame() -> Vec<u8> {
+        baztet_core::baztet_bep::testing::framed_started(4242, "release 9.3.1-stub")
+    }
+
+    fn build_started_frame2() -> Vec<u8> {
+        baztet_core::baztet_bep::testing::framed_started(5, "x")
+    }
+
+    #[test]
     fn header_denominator_stabilizes() {
         let requested = 10;
         let out = BepOutput {

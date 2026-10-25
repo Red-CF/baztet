@@ -116,3 +116,16 @@ fn bench_snapshot() -> Duration {
     std::assert_eq!(back.graph.len(), 10_000);
     t0.elapsed()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn decodes_and_roundtrips() {
+        let r = run(500).await.unwrap();
+        assert_eq!(r.decoded, 500);
+        assert!(r.decode_duration > Duration::ZERO);
+        assert!(r.snapshot_roundtrip > Duration::ZERO);
+    }
+}

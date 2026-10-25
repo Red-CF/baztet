@@ -113,8 +113,14 @@ fn full_sync_and_execution() {
     assert!(out.status.success(), "passing test failed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     // everything green: totals only, no per-target detail
-    assert!(stdout.contains("1 of 1 target(s) passed"), "quiet-ok line missing:\n{stdout}");
-    assert!(!stdout.contains("PASSED   "), "per-target detail leaked on a green run:\n{stdout}");
+    assert!(
+        stdout.contains("1 of 1 target(s) passed"),
+        "quiet-ok line missing:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("PASSED   "),
+        "per-target detail leaked on a green run:\n{stdout}"
+    );
 
     // failing test: exit code 3 (tests failed), FAILED status printed
     let out = run_bazet(&["test", "--pattern", "failing"]);

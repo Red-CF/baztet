@@ -491,3 +491,82 @@ pub async fn passthrough_cmd(cli: &Cli, args: Vec<String>) -> anyhow::Result<Exi
 fn dashboard(cli: &Cli) -> bool {
     !cli.raw && std::io::stdout().is_terminal() && std::io::stdin().is_terminal()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use baztet_snapshot::Snapshot;
+    use camino::Utf8PathBuf;
+    use clap::Parser;
+
+    /// env writes are process-global: serialize the two tests that touch it
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn fixture_workspace(tag: &str) -> (Utf8PathBuf, Utf8PathBuf) {
+        let dir = std::env::temp_dir().join(format!("baztet-cmds-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("MODULE.bazel"), "").unwrap();
+        (
+            Utf8PathBuf::from_path_buf(dir.clone()).unwrap(),
+            Utf8PathBuf::from_path_buf(dir).unwrap(),
+        )
+    }
+
+    #[test]
+    fn targets_lists_and_filters() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (ws, dir) = fixture_workspace("targets");
+        std::env::set_var("BAZTET_CACHE_DIR", &dir);
+        let mut snap = Snapshot::new(ws.clone());
+        snap.graph
+            .get_or_insert("//a:lib", "sh_library", None, vec![]);
+        snap.graph
+            .get_or_insert("//b:test", "sh_test", None, vec![]);
+        snap.save().unwrap();
+        let cli = Cli::parse_from(["baztet", "--workspace", ws.as_str(), "targets"]);
+        let out = targets_cmd(&cli, &None, false).unwrap();
+        assert_eq!(out, ExitCode::SUCCESS);
+        // json path too
+        targets_cmd(&cli, &Some("=sh_test".into()), true).unwrap();
+        std::env::remove_var("BAZTET_CACHE_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deps_guards_and_lists() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (ws, dir) = fixture_workspace("deps");
+        std::env::set_var("BAZTET_CACHE_DIR", &dir);
+        let cli = Cli::parse_from(["baztet", "--workspace", ws.as_str(), "deps", "//a:lib"]);
+        // not a label -> error
+        assert!(deps_cmd(&cli, "notalabel".into(), false, false).is_err());
+        // not in snapshot -> error
+        let mut snap = Snapshot::new(ws.clone());
+        snap.graph
+            .get_or_insert("//a:lib", "sh_library", None, vec![]);
+        let b = snap
+            .graph
+            .get_or_insert("//a:dep", "sh_library", None, vec![]);
+        let a = snap
+            .graph
+            .get_or_insert("//a:lib2", "sh_library", None, vec![]);
+        snap.graph.add_dep(a, b);
+        snap.save().unwrap();
+        // not in the graph -> error
+        assert!(deps_cmd(&cli, "//a:bogus".into(), false, false).is_err());
+        assert_eq!(
+            deps_cmd(&cli, "//a:lib2".into(), false, false).unwrap(),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            deps_cmd(&cli, "//a:lib2".into(), true, true).unwrap(),
+            ExitCode::SUCCESS
+        );
+        std::env::remove_var("BAZTET_CACHE_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
