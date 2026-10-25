@@ -347,6 +347,65 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+
+    fn sample() -> Snapshot {
+        let mut s = Snapshot::new("/ws".into());
+        s.bazel_version = Some("release 9.3.1".into());
+        let a = s.graph.get_or_insert(
+            "//a:lib",
+            "sh_library",
+            Some("//a/BUILD:1".into()),
+            vec!["a.rs".into()],
+        );
+        s.graph.add_dep(a, a);
+        s.specified_targets = vec!["//a:all".into()];
+        s.sync_fingerprint = Some(42);
+        s
+    }
+
+    #[test]
+    fn bytes_roundtrip_preserves_graph() {
+        let s = sample();
+        let restored = Snapshot::from_bytes(&s.to_bytes().unwrap()).unwrap();
+        assert_eq!(restored, s);
+        assert_eq!(restored.graph.len(), 1);
+    }
+
+    #[test]
+    fn save_load_json_projection_and_schema_gate() {
+        let dir = std::env::temp_dir().join(format!("baztet-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // route the snapshot into the temp dir for this call
+        std::env::set_var("BAZTET_CACHE_DIR", &dir);
+        let snapshot = sample();
+        let path = snapshot.save().unwrap();
+        assert!(path.is_file());
+        let loaded = Snapshot::load(&Utf8PathBuf::from("/ws")).unwrap();
+        assert_eq!(loaded, snapshot);
+        // corrupted file -> Corrupt, not panic
+        std::fs::write(&path, b"not a snapshot").unwrap();
+        assert!(Snapshot::load(&Utf8PathBuf::from("/ws")).is_err());
+        // unsupported schema is an explicit error on decode
+        let mut bad = snapshot.clone();
+        bad.schema = SNAPSHOT_SCHEMA + 7;
+        let bytes = bad.to_bytes().unwrap();
+        assert!(Snapshot::from_bytes(&bytes).is_err());
+        std::env::remove_var("BAZTET_CACHE_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn json_projection_roundtrips_fields() {
+        let s = sample();
+        let json = s.to_json(false).unwrap();
+        assert!(json.contains("\"schema\":"));
+        assert!(json.contains("\"//a:lib\""));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

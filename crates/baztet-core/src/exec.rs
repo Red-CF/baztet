@@ -888,3 +888,37 @@ mod tests {
         assert_eq!(cases[0].message.as_deref(), Some("boom"));
     }
 }
+
+#[cfg(test)]
+mod console_tests {
+    use super::*;
+
+    #[test]
+    fn console_tail_keeps_lines_and_last_progress() {
+        let c = ConsoleCapture::new();
+        let line = b"[1/3] Compiling //a:one ...ok\n".to_vec();
+        let mut noise = Vec::new();
+        for i in 0..500 {
+            noise.extend(format!("line {i} filler padding to grow the buffer\n").as_bytes());
+        }
+        c.append(&line, 512);
+        c.append(&noise, 512);
+        // buffer stays bounded well under 2x cap
+        assert!(c.text().len() < 2 * 512 + 1024);
+        // the tail starts at a line boundary
+        let tail = c.text();
+        assert!(
+            tail.starts_with("line ") || tail.starts_with("\n"),
+            "tail: {tail:?}"
+        );
+        // last progress line is the appended verdict-ish line? noise filled
+        // past it, so re-append on a fresh capture to assert semantics
+        let c2 = ConsoleCapture::new();
+        c2.append(b"Computing main repo mapping: \n", 1024);
+        c2.append(b"[2/3] Building //a:two\n", 1024);
+        assert_eq!(c2.last_progress(), "[2/3] Building //a:two");
+        // whitespace-only tails are skipped
+        c2.append(b"\n", 1024);
+        assert_eq!(c2.last_progress(), "[2/3] Building //a:two");
+    }
+}

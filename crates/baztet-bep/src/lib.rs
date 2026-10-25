@@ -505,6 +505,100 @@ mod tests {
     }
 
     #[test]
+    fn verdict_outputs_progress_and_finish() {
+        use bes::{
+            build_event, build_event_id, build_finished, BuildFinished, File, Progress, TestResult,
+            TestStatus as ProtoStatus, TestSummary as SummaryProto,
+        };
+        // a test result with outputs + a summary + stderr progress + finish
+        let tr_id = bes::BuildEventId {
+            id: Some(build_event_id::Id::TestResult(
+                build_event_id::TestResultId {
+                    label: "//a:t".into(),
+                    run: 1,
+                    shard: 0,
+                    configuration: None,
+                    attempt: 0,
+                },
+            )),
+        };
+        let tr = bes::BuildEvent {
+            id: Some(tr_id.clone()),
+            payload: Some(build_event::Payload::TestResult(TestResult {
+                test_action_output: vec![
+                    bes::File {
+                        name: "test.xml".into(),
+                        path_prefix: vec!["t".into()],
+                        ..Default::default()
+                    },
+                    File {
+                        name: "test.log".into(),
+                        ..Default::default()
+                    },
+                ],
+                test_attempt_duration: None,
+                cached_locally: true,
+                status: ProtoStatus::Flaky as i32,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let ts_event = bes::BuildEvent {
+            id: Some(bes::BuildEventId {
+                id: Some(build_event_id::Id::TestSummary(
+                    build_event_id::TestSummaryId {
+                        label: "//a:t".into(),
+                        configuration: None,
+                    },
+                )),
+            }),
+            payload: Some(build_event::Payload::TestSummary(SummaryProto {
+                overall_status: ProtoStatus::Timeout as i32,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let progress = bes::BuildEvent {
+            id: Some(bes::BuildEventId::default()),
+            payload: Some(build_event::Payload::Progress(Progress {
+                stderr: "\x1b[31mERROR: /a/BUILD:3:1:x boom\x1b[0m\n  \n".into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let finished = bes::BuildEvent {
+            id: Some(bes::BuildEventId::default()),
+            payload: Some(build_event::Payload::Finished(BuildFinished {
+                exit_code: Some(build_finished::ExitCode {
+                    code: 4,
+                    name: String::new(),
+                }),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let out = parse(&framed(&[tr, ts_event, progress, finished])).unwrap();
+        assert_eq!(out.test_results.len(), 1);
+        let res = &out.test_results[0];
+        assert_eq!(res.label, "//a:t");
+        assert_eq!(res.status, "FLAKY");
+        assert!(res.cached_locally);
+        assert!(res.xml.is_some());
+        assert!(res.log.is_some());
+        assert_eq!(
+            out.test_summaries,
+            [TestSummary {
+                label: "//a:t".into(),
+                status: "TIMEOUT".into(),
+            }]
+        );
+        // stderr lines: trimmed, empty dropped, Ansi stripped
+        assert_eq!(out.progress_lines, ["ERROR: /a/BUILD:3:1:x boom"]);
+        assert_eq!(out.exit_code, Some(4));
+    }
+
+    #[test]
     fn prefix_then_extend_reaches_full_parse() {
         let bytes = framed(&[started_event()]);
         let full = parse(&bytes).unwrap();
@@ -524,5 +618,54 @@ mod tests {
         let (empty, again) = parse_prefix(&bytes, bytes.len()).unwrap();
         assert_eq!(again, bytes.len());
         assert!(empty.test_summaries.is_empty() && empty.named_sets.is_empty());
+    }
+}
+
+/// Public test support: builds framed BuildEvents without the caller
+/// needing protos/prost directly. #[doc(hidden)] — not part of the API.
+#[doc(hidden)]
+pub mod testing {
+    use super::build_event_stream as bes;
+    use prost::Message;
+
+    pub fn framed_started(pid: u32, tool: &str) -> Vec<u8> {
+        let event = bes::BuildEvent {
+            id: Some(bes::BuildEventId {
+                id: Some(bes::build_event_id::Id::Started(
+                    bes::build_event_id::BuildStartedId {},
+                )),
+            }),
+            payload: Some(bes::build_event::Payload::Started(bes::BuildStarted {
+                server_pid: pid as i64,
+                build_tool_version: tool.into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        event.encode_length_delimited(&mut out).unwrap();
+        out
+    }
+
+    pub fn framed_target_status(label: &str, _success: bool) -> Vec<u8> {
+        let event = bes::BuildEvent {
+            id: Some(bes::BuildEventId {
+                id: Some(bes::build_event_id::Id::TargetCompleted(
+                    bes::build_event_id::TargetCompletedId {
+                        label: label.into(),
+                        configuration: None,
+                        aspect: String::new(),
+                    },
+                )),
+            }),
+            payload: Some(bes::build_event::Payload::Completed(bes::TargetComplete {
+                success: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        event.encode_length_delimited(&mut out).unwrap();
+        out
     }
 }

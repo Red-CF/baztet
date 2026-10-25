@@ -158,3 +158,73 @@ pub fn doctor_report(
     }
     Ok((report, ok))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_buckets_and_predicate() {
+        assert!(status_is_failure("FAILED"));
+        assert!(!status_is_failure("PASSED"));
+        assert!(status_is_failure("FLAKY"));
+        assert!(status_is_failure("NO_STATUS"));
+        // column is padded to 8 visible chars
+        assert!(test_status_colored("PASSED").len() >= 8);
+    }
+
+    // the stub binary is a shell script: only meaningful on unix; on
+    // windows the doctor's missing-bazel branch is still covered
+    #[cfg(unix)]
+    fn doctor_stub(dir: &std::path::Path, name: &str) -> camino::Utf8PathBuf {
+        // a fake bazel that answers --version
+        let bin = dir.join(name);
+        std::fs::write(&bin, "#!/bin/sh\necho \"bazel 9.3.1 (stub)\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        camino::Utf8PathBuf::from_path_buf(bin).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn doctor_report_healthy_case() {
+        let dir = std::env::temp_dir().join(format!("baztet-doc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // workspace with marker + pv + snapshot? snapshot none is fine
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("MODULE.bazel"), "").unwrap();
+        std::fs::write(ws.join(".bazelproject"), "build_flags:\n").unwrap();
+        let stub = doctor_stub(&dir, "stub-bazel");
+        let (report, ok) = doctor_report(
+            &camino::Utf8PathBuf::from_path_buf(ws.clone()).unwrap(),
+            Some(stub.as_str()),
+        )
+        .unwrap();
+        assert!(ok, "healthy report flagged bad:\n{report}");
+        assert!(report.contains("bazel 9.3.1 (stub)"));
+        assert!(report.contains("project view:"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&stub);
+    }
+
+    #[test]
+    fn doctor_report_flags_missing_bazel() {
+        let dir = std::env::temp_dir().join(format!("baztet-docbad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("MODULE.bazel"), "").unwrap();
+        let (report, ok) = doctor_report(
+            &camino::Utf8PathBuf::from_path_buf(ws).unwrap(),
+            Some("/nonexistent/baztet-stub"),
+        )
+        .unwrap();
+        assert!(!ok);
+        assert!(report.contains("NOT FOUND"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
