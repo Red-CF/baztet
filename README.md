@@ -204,8 +204,8 @@ real Bazel 9 workspace (~756 targets); full methodology and numbers in
 | `sync --fresh` (cold, full query + aspect) | ~53 s — ~40 s of that is Bazel's own analysis |
 | `sync` with nothing changed | **~0.7 s** |
 | `targets` (756 rows) | **~15 ms** |
-| decode 200k target frames (`baztet bench`) | ~15 ms |
-| snapshot roundtrip, 10k targets | ~5 ms |
+| decode 200k target frames (`baztet bench`) | ~9 ms |
+| snapshot roundtrip, 10k targets | ~3 ms |
 
 Honest note: Bazel itself dominates sync wall-clock — the cold range is
 Bazel cache warmth, not baztet. baztet's wins are process-level and

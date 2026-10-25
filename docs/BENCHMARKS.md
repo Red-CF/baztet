@@ -42,9 +42,9 @@ on that, this release narrows what the incremental path gives Bazel:
 
 `baztet bench --targets 200000`:
 
-- 200k framed `Build.Target` messages stream-decoded in **~15 ms** (pure
-  varint framing + prost, no heap blowup)
-- 10k-target snapshot roundtrip (bincode+zstd): **~5 ms**
+- 200k framed `Build.Target` messages stream-decoded in **~9 ms** (pure varint
+  framing + prost; was ~15 ms at 0.3 — mimalloc + allocator-era gains)
+- 10k-target snapshot roundtrip (bincode+zstd): **~3 ms** (was ~5 ms at 0.3)
 
 These are the costs the plugin pays inside the IntelliJ JVM for every sync;
 baztet pays ~nothing for the equivalent decode paths.
