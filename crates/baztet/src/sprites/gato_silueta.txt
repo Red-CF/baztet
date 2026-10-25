@@ -1,0 +1,451 @@
+# Gato caminando · estilo silueta · ciclo de 8 frames · tamaños 31x11, 25x8, 17x6
+# Formato: '@@ <tamaño> <derecha|izquierda> <frame>' + líneas de ancho fijo.
+
+@@ 31x11 derecha 0
+                             ' 
+ 33                     fj  Qf 
+tR                      Q@BB@Q 
+3B!                    o@@@ooBt
+ OBf'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+    ;Q@@@RRRRRRRRRRB@@@(       
+    !3O@B^         tfB@O       
+     tj@B'        '3(^BB'      
+       o@f        `t( /BQ      
+@@ 31x11 derecha 1
+                             ' 
+ :t                     fj  Qf 
+/R                      Q@BB@Q 
+3B;                    o@@@ooBt
+ OBf'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+    .Q@@@RRRRRRRRRRB@@@!       
+     tB@R         ^3j@@(       
+      Q@O         (t^j@j       
+      /@Q         (t .RB:      
+@@ 31x11 derecha 2
+                             ' 
+ ./                     fj  Qf 
+;R                      Q@BB@Q 
+3B:                    o@@@ooBt
+ OBf'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+     o@@@RRRRRRRRRRR@@B;       
+      B@O          :Q@B.       
+     .B@j          (o@B        
+     `B@o/           O@t       
+@@ 31x11 derecha 3
+                             ' 
+ :t                     fj  Qf 
+/R                      Q@BB@Q 
+3B;                    o@@@ooBt
+ OBf'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+     o@@BRRRRRRRRRRR@@B^       
+     !@@(           Q@Q        
+     j@B:           O@j        
+     j@Q(           t@O        
+@@ 31x11 derecha 4
+                             ' 
+ 33                     fj  Qf 
+tR                      Q@BB@Q 
+3B!                    o@@@ooBt
+ OBf'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+     Q@@BRRRRRRRRRRR@@B'       
+     3@B            B@j        
+     `B@3          ^B@f        
+      (f:          'B@j!       
+@@ 31x11 derecha 5
+  ^                          ' 
+ O!                     fj  Qf 
+3R                      Q@BB@Q 
+tB(                    o@@@ooBt
+ OBj'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+     Q@@BRRRRRRRRRRB@@R`       
+     t@@O          /@@/        
+     (fBBf         o@R'        
+     ;3/           o@Q(        
+@@ 31x11 derecha 6
+  !                          ' 
+.Q^                     fj  Qf 
+3R                      Q@BB@Q 
+tB(                    o@@@ooBt
+ OBj'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+     QB@@BRRRRRRRRRB@@@/       
+     t3B@Q         ;O@B:       
+    .t('BB:        `B@O        
+    .t( !BR         tf^        
+@@ 31x11 derecha 7
+  ^                          ' 
+ O!                     fj  Qf 
+3R                      Q@BB@Q 
+tB(                    o@@@ooBt
+ OBj'  .............`!Q@@@@BRO3
+  (R@@@@@@@@@@@@@@@@@@@@@Q'    
+    R@@@@@@@@@@@@@@@@@@Bt      
+    `QB@@BRRRRRRRRRB@@@f       
+    ^3j@@3         (3B@Q       
+    (t^f@o         (3Q@O       
+    /t  RB;        !3!         
+@@ 31x11 izquierda 0
+ `                             
+ fQ  jf                     33 
+ Q@BB@Q                      Rt
+tBoo@@@o                    !B3
+3ORB@@@@Q!'.............  `fBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       )@@@BRRRRRRRRRR@@@Q;    
+       O@Bft         ^B@O3!    
+      `BB^)3`        `B@jt     
+      QB\ )t'        f@o       
+@@ 31x11 izquierda 1
+ `                             
+ fQ  jf                     t: 
+ Q@BB@Q                      R\
+tBoo@@@o                    ;B3
+3ORB@@@@Q!'.............  `fBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       !@@@BRRRRRRRRRR@@@Q.    
+       )@@j3^         R@Bt     
+       j@j^t)         O@Q      
+      :BR. t)         Q@\      
+@@ 31x11 izquierda 2
+ `                             
+ fQ  jf                     \. 
+ Q@BB@Q                      R;
+tBoo@@@o                    :B3
+3ORB@@@@Q!'.............  `fBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       ;B@@RRRRRRRRRRR@@@o     
+       .B@Q:          O@B      
+        B@o)          j@B.     
+       t@O           \o@B'     
+@@ 31x11 izquierda 3
+ `                             
+ fQ  jf                     t: 
+ Q@BB@Q                      R\
+tBoo@@@o                    ;B3
+3ORB@@@@Q!'.............  `fBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       ^B@@RRRRRRRRRRRB@@o     
+        Q@Q           )@@!     
+        j@O           :B@j     
+        O@t           )Q@j     
+@@ 31x11 izquierda 4
+ `                             
+ fQ  jf                     33 
+ Q@BB@Q                      Rt
+tBoo@@@o                    !B3
+3ORB@@@@Q!'.............  `fBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       `B@@RRRRRRRRRRRB@@Q     
+        j@B            B@3     
+        f@B^          3@B'     
+       !j@B`          :f)      
+@@ 31x11 izquierda 5
+ `                          ^  
+ fQ  jf                     !O 
+ Q@BB@Q                      R3
+tBoo@@@o                    )Bt
+3ORB@@@@Q!'.............  `jBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       'R@@BRRRRRRRRRRB@@Q     
+        \@@\          O@@t     
+        `R@o         fBBf)     
+        )Q@o           \3;     
+@@ 31x11 izquierda 6
+ `                          !  
+ fQ  jf                     ^Q.
+ Q@BB@Q                      R3
+tBoo@@@o                    )Bt
+3ORB@@@@Q!'.............  `jBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       \@@@BRRRRRRRRRB@@BQ     
+       :B@O;         Q@B3t     
+        O@B'        :BB`)t.    
+        ^ft         RB! )t.    
+@@ 31x11 izquierda 7
+ `                          ^  
+ fQ  jf                     !O 
+ Q@BB@Q                      R3
+tBoo@@@o                    )Bt
+3ORB@@@@Q!'.............  `jBO 
+    `Q@@@@@@@@@@@@@@@@@@@@@R)  
+      tB@@@@@@@@@@@@@@@@@@R    
+       f@@@BRRRRRRRRRB@@BQ'    
+       Q@B3)         3@@j3^    
+       O@Q3)         o@f^t)    
+         !3!        ;BR  t\    
+@@ 25x8 derecha 0
+ /:                3: j; 
+:Q                 R@B@3 
+ Rt               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    jB@O3333333OB@f      
+    tO@(       t(QR      
+     ^Rj       t^'Rf     
+@@ 25x8 derecha 1
+ `'                3: j; 
+^Q                 R@B@3 
+.R(               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    f@@o333333fQB@(      
+    'RB`      'ttBj      
+     3B'      ;( jR      
+@@ 25x8 derecha 2
+  `                3: j; 
+`Q                 R@B@3 
+.R(               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    !@@j3333333j@@!      
+     BB        !R@;      
+     RB/        !Bt      
+@@ 25x8 derecha 3
+ `'                3: j; 
+^Q                 R@B@3 
+.R(               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    (@Bf3333333fBB:      
+    !@O         RR       
+    t@j         oR       
+@@ 25x8 derecha 4
+ /:                3: j; 
+:Q                 R@B@3 
+ Rt               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    3@R33333333j@B`      
+    ^@j        'BQ       
+     ff        ^BQ;      
+@@ 25x8 derecha 5
+ f^                3: j; 
+;Q                 R@B@3 
+ R3               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    3@Bf3333333o@R.      
+    ;Q@(       t@f       
+    't!:       o@3       
+@@ 25x8 derecha 6
+ j`                3: j; 
+;Q                 R@B@3 
+ R3               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    3R@B3333333oB@t      
+    (tOB`      ^BB.      
+    (! Qo       j3       
+@@ 25x8 derecha 7
+ f^                3: j; 
+;Q                 R@B@3 
+ R3               O@@@@B:
+ `ORoOQQQQQQQQQQQB@@o!`  
+   t@@@@@@@@@@@@@@B/     
+    fR@Q3333333OR@O      
+    t(BQ       /f@Q      
+   't tB^      ;t;^      
+@@ 25x8 izquierda 0
+ ;j :3                :\ 
+ 3@B@R                 Q:
+:B@@@@O               tR 
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      f@BO3333333O@Bj    
+      RQ)t       )@Ot    
+     fR`^t       jR^     
+@@ 25x8 izquierda 1
+ ;j :3                `' 
+ 3@B@R                 Q^
+:B@@@@O               )R.
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      )@BQf333333o@@f    
+      jBtt`      'BR`    
+      Rj );      `B3     
+@@ 25x8 izquierda 2
+ ;j :3                '  
+ 3@B@R                 Q'
+:B@@@@O               )R.
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      !@@j3333333j@@!    
+      ;@R!        BB     
+      tB!        \BR     
+@@ 25x8 izquierda 3
+ ;j :3                `' 
+ 3@B@R                 Q^
+:B@@@@O               )R.
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      :BBf3333333fB@)    
+       RR         O@!    
+       Ro         j@t    
+@@ 25x8 izquierda 4
+ ;j :3                :\ 
+ 3@B@R                 Q:
+:B@@@@O               tR 
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      'B@j33333333R@3    
+       QB`        j@^    
+      ;QB^        ff     
+@@ 25x8 izquierda 5
+ ;j :3                ^f 
+ 3@B@R                 Q;
+:B@@@@O               3R 
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      .R@o3333333fB@3    
+       f@t       )@Q;    
+       3@o       :!t`    
+@@ 25x8 izquierda 6
+ ;j :3                'j 
+ 3@B@R                 Q;
+:B@@@@O               3R 
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      t@Bo3333333B@R3    
+      .BB^      'BOt)    
+       3j       oQ !)    
+@@ 25x8 izquierda 7
+ ;j :3                ^f 
+ 3@B@R                 Q;
+:B@@@@O               3R 
+  '!o@@BQQQQQQQQQQQOoRO' 
+     \B@@@@@@@@@@@@@@t   
+      O@RO3333333Q@Rf    
+      Q@f\       QB)t    
+      ^;t;      ^Bt t`   
+@@ 17x6 derecha 0
+^            ! / 
+o            RBo;
+(j!!///////tR@O3/
+  R@@@@@@@@@R!   
+  (BO''''^fQO    
+   tO     ('O:   
+@@ 17x6 derecha 1
+             ! / 
+o            RBo;
+(j!!///////tR@O3/
+  R@@@@@@@@@R!   
+  ;Bj'''':jBf    
+   jt     /:O    
+@@ 17x6 derecha 2
+             ! / 
+o            RBo;
+tj!!///////tR@O3/
+  R@@@@@@@@@R!   
+   Bf'''''(@(    
+   R3      j3    
+@@ 17x6 derecha 3
+             ! / 
+o            RBo;
+(j!!///////tR@O3/
+  R@@@@@@@@@R!   
+  'Bt''''';B!    
+  !B:      Q^    
+@@ 17x6 derecha 4
+^            ! / 
+o            RBo;
+(j!!///////tR@O3/
+  R@@@@@@@@@R!   
+  :B!'''''(B:    
+   j:     :B;    
+@@ 17x6 derecha 5
+!            ! / 
+o            RBo;
+(j!!///////tR@O3/
+ .R@@@@@@@@@R!   
+  ^@f'''''3B.    
+   3(     fQ     
+@@ 17x6 derecha 6
+/            ! / 
+o            RBo;
+(j!!///////tR@O3/
+ .R@@@@@@@@@R!   
+  ;OB!''''(@t    
+  !^f3     o     
+@@ 17x6 derecha 7
+!            ! / 
+o            RBo;
+(j!!///////tR@O3/
+ .R@@@@@@@@@R!   
+  /QR:''''tRQ    
+  (`Q'    :t/    
+@@ 17x6 izquierda 0
+ \ !            ^
+;oBR            o
+\3O@Rt\\\\\\\!!j)
+   !R@@@@@@@@@R  
+    OQf^````OB)  
+   :O`)     Ot   
+@@ 17x6 izquierda 1
+ \ !             
+;oBR            o
+\3O@Rt\\\\\\\!!j)
+   !R@@@@@@@@@R  
+    fBj:````jB;  
+    O:\     tj   
+@@ 17x6 izquierda 2
+ \ !             
+;oBR            o
+\3O@Rt\\\\\\\!!jt
+   !R@@@@@@@@@R  
+    )@)`````fB   
+    3j      3R   
+@@ 17x6 izquierda 3
+ \ !             
+;oBR            o
+\3O@Rt\\\\\\\!!j)
+   !R@@@@@@@@@R  
+    !B;`````tB`  
+    ^Q      :B!  
+@@ 17x6 izquierda 4
+ \ !            ^
+;oBR            o
+\3O@Rt\\\\\\\!!j)
+   !R@@@@@@@@@R  
+    :B)`````!B:  
+    ;B:     :j   
+@@ 17x6 izquierda 5
+ \ !            !
+;oBR            o
+\3O@Rt\\\\\\\!!j)
+   !R@@@@@@@@@R. 
+    .B3`````f@^  
+     Qf     )3   
+@@ 17x6 izquierda 6
+ \ !            \
+;oBR            o
+\3O@Rt\\\\\\\!!j)
+   !R@@@@@@@@@R. 
+    t@)````!BO;  
+     o     3f^!  
+@@ 17x6 izquierda 7
+ \ !            !
+;oBR            o
+\3O@Rt\\\\\\\!!j)
+   !R@@@@@@@@@R. 
+    QRt````:RQ\  
+    \t:    `Q')  

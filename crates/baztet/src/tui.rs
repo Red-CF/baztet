@@ -173,6 +173,75 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
+/// The verdict's color: green pass, red fail, yellow flaky, gray unknown.
+pub fn verdict_style(status: &str) -> Style {
+    match status {
+        "PASSED" | "BUILT" => Style::new().fg(Color::Green),
+        "FAILED" | "TIMEOUT" | "ERROR" => Style::new().fg(Color::Red),
+        "FLAKY" => Style::new().fg(Color::Yellow),
+        _ => Style::new().fg(Color::Gray),
+    }
+}
+
+/// One console line's activity: (done, total) fraction and the target
+/// being built or tested, straight from bazel's status text.
+pub fn parse_status(line: &str) -> (Option<(u64, u64)>, Option<String>) {
+    let mut fraction = None;
+    let mut active = None;
+    if let (Some(open), Some(close)) = (line.find('['), line.find(']')) {
+        if close > open {
+            let inside = &line[open + 1..close];
+            if let Some(slash) = inside.rfind('/') {
+                let done = inside[..slash].trim().replace(',', "");
+                let total = inside[slash + 1..].trim().replace(',', "");
+                if let (Ok(d), Ok(t)) = (done.parse(), total.parse()) {
+                    fraction = Some((d, t));
+                }
+            }
+        }
+    }
+    for word in ["Building", "Testing"] {
+        let mut tail = line;
+        while let Some(i) = tail.find(word) {
+            let after = &tail[i + word.len()..];
+            if after.starts_with(' ') {
+                let t: String = after
+                    .trim_start()
+                    .trim_end_matches(';')
+                    .chars()
+                    .take_while(|c| !c.is_whitespace())
+                    .collect();
+                active = Some(format!("{word} {t}"));
+                break;
+            }
+            tail = &tail[i + word.len()..];
+        }
+        if active.is_some() {
+            break;
+        }
+    }
+    (fraction, active)
+}
+
+/// The strip's bar: filled fraction in purple, the rest as a track.
+pub fn bar_line(fraction: Option<(u64, u64)>, width: usize) -> Line<'static> {
+    let Some((done, total)) = fraction.filter(|(_, t)| *t > 0) else {
+        return Line::from(Span::styled(
+            "─".repeat(width),
+            Style::new().fg(Color::DarkGray),
+        ));
+    };
+    let filled = ((done as f64 / total as f64) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    Line::from(vec![
+        Span::styled(
+            "━".repeat(filled),
+            Style::new().fg(Color::Rgb(0xB0, 0x7C, 0xFF)),
+        ),
+        Span::styled("━".repeat(width - filled), Style::new().fg(Color::DarkGray)),
+    ])
+}
+
 fn draw<B>(
     terminal: &mut Terminal<B>,
     out: &BepOutput,
@@ -190,17 +259,57 @@ where
         let sprite_h = walker.map(|g| g.size.dims().1).unwrap_or(0);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(2 + sprite_h)])
+            .constraints([Constraint::Min(1), Constraint::Length(3 + sprite_h)])
             .split(f.area());
 
-        // verdict list, gold frame
-        let mut rows: Vec<Line> = Vec::new();
-        for s in &out.test_summaries {
-            rows.push(Line::from(format!(" {:<48} {}", s.label, s.status)));
+        // verdict list: the active target first, failures first after it
+        let mut fraction: Option<(u64, u64)> = None;
+        let mut active: Option<String> = None;
+        for line in console.text().lines().rev() {
+            if fraction.is_none() {
+                fraction = parse_status(line).0;
+            }
+            if active.is_none() {
+                active = parse_status(line).1;
+            }
         }
+        let mut rows: Vec<Line> = Vec::new();
+        if let Some(a) = &active {
+            rows.push(Line::from(Span::styled(
+                format!(" {}", a),
+                Style::new().bold().fg(Color::Yellow),
+            )));
+        }
+        let mut failed_rows: Vec<Line> = Vec::new();
+        let mut ok_rows: Vec<Line> = Vec::new();
+        for s in &out.test_summaries {
+            let row = Line::from(Span::styled(
+                format!(" {:<48} {}", s.label, s.status),
+                verdict_style(&s.status),
+            ));
+            if s.status != "PASSED" {
+                failed_rows.push(row);
+            } else {
+                ok_rows.push(row);
+            }
+        }
+        for (label, success) in &out.target_status {
+            let verdict = if *success { "BUILT" } else { "FAILED" };
+            let row = Line::from(Span::styled(
+                format!(" {:<48} {}", label, verdict),
+                verdict_style(verdict),
+            ));
+            if *success {
+                ok_rows.push(row);
+            } else {
+                failed_rows.push(row);
+            }
+        }
+        rows.extend(failed_rows);
+        rows.extend(ok_rows);
         if rows.is_empty() {
             rows.push(Line::from(Span::styled(
-                " waiting for the first verdicts…",
+                " bazel analyzing…",
                 Style::new().dim(),
             )));
         }
@@ -212,27 +321,37 @@ where
         );
         f.render_widget(list, chunks[0]);
 
-        // strip: the status line — the activity beat. The marker cycles
-        // with the walk tempo and the elapsed timer runs while bazel works,
-        // stopping with it; the run freezes the line at the final beat
+        // strip: status beat, purple progress bar, cat walking underneath
         const MARKS: [&str; 3] = ["▸ ", "▹ ", "● "];
         let mark = if settled {
             MARKS[0]
         } else {
             MARKS[(elapsed.as_millis() / 400) as usize % MARKS.len()]
         };
-        let progress = console.last_progress();
+        let raw_progress = console.last_progress();
+        let (_, line_active) = parse_status(&raw_progress);
+        let shown = match line_active {
+            Some(a) => a,
+            None => raw_progress,
+        };
         let (tw, _) = crossterm::terminal::size().unwrap_or((80, 24));
-        let max_progress = tw.saturating_sub(14) as usize;
-        let progress: String = progress.chars().take(max_progress).collect();
+        let max_width = tw.saturating_sub(16) as usize;
+        let shown: String = shown.chars().take(max_width).collect();
         let mut status = vec![
             Span::styled(mark, Style::new().bold().fg(Color::Yellow)),
-            Span::raw(progress),
+            Span::raw(if shown.is_empty() {
+                "bazel starting…".to_string()
+            } else {
+                shown
+            }),
         ];
         if !settled {
             status.push(Span::raw(format!(" · {:.0}s", elapsed.as_secs_f64())));
         }
-        let mut strip: Vec<Line> = vec![Line::from(status)];
+        let mut strip: Vec<Line> = vec![
+            Line::from(status),
+            bar_line(fraction, tw.saturating_sub(6) as usize),
+        ];
         if let Some(walker) = walker {
             for l in walker.frame_lines() {
                 strip.push(Line::from(Span::styled(
