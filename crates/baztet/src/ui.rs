@@ -173,6 +173,9 @@ mod tests {
         assert!(test_status_colored("PASSED").len() >= 8);
     }
 
+    // the stub binary is a shell script: only meaningful on unix; on
+    // windows the doctor's missing-bazel branch is still covered
+    #[cfg(unix)]
     fn doctor_stub(dir: &std::path::Path, name: &str) -> camino::Utf8PathBuf {
         // a fake bazel that answers --version
         let bin = dir.join(name);
@@ -185,6 +188,7 @@ mod tests {
         camino::Utf8PathBuf::from_path_buf(bin).unwrap()
     }
 
+    #[cfg(unix)]
     #[test]
     fn doctor_report_healthy_case() {
         let dir = std::env::temp_dir().join(format!("baztet-doc-{}", std::process::id()));
