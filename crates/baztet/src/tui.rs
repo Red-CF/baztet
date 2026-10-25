@@ -197,31 +197,53 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
-/// Bastet on duty, art based on Joan G. Stark's cat (jgs, asciiart.eu,
-/// CC BY-SA): running frames blink and swish the tail; the goodbye is
-/// state-aware when the run settles.
-const CAT_RUNNING: [&str; 3] = [
-    r#"\    /\
- )  ( ')
-(  /  )
- \(__)|"#,
-    r#"\    /\
- )  ( -)
-(  /  )
- \(__)|"#,
-    r#"\    /\
- )  ( ')
-(  /  )
- \(__) /"#,
+/// Custom Bastet design: eyes per frame (alert, blink, side-glance,
+/// content squint), Bastet's jewelled collar, whiskers, and a tail that
+/// swishes across the frames; goodbyes are state-aware.
+const CAT_RUNNING: [&str; 4] = [
+    r#" /\_/\
+(  o.o  )
+   > ^ <
+  /|   |\
+ ( |*=*| )
+  \_|   |_/
+ (_/   \_)"#,
+    r#" /\_/\
+(  -.-  )
+   > ^ <
+  /|   |\
+ ( |*=*| )
+  \_|   |_/
+ (__\ /__)"#,
+    r#" /\_/\
+(  o.O  )
+   > ^ <
+  /|   |\
+ ( |*=*| )
+  \_|   |_/
+   (_/__)"#,
+    r#" /\_/\
+(  ^.^. )
+   > ^ <
+  /|   |\
+ ( |*=*| )
+  \_|   |_/
+ (_/ \_)"#,
 ];
-const CAT_HAPPY: &str = r#"\    /\
- )  ( ') meow
-(  /  )
- \(__) |"#;
-const CAT_GRUMPY: &str = r#"\    /\
- )  ( T
-(  /  )
- \(__)|!"#;
+const CAT_HAPPY: &str = r#" /\_/\
+(  ^.^  )
+   > ω <
+  /|   |\
+ ( |*=*| ) ~
+  \_/ \_/
+~(__/ \__)~"#;
+const CAT_GRUMPY: &str = r#" /\_/\
+(  x.x  )
+   >___<
+  /|   |\
+ ( |*=*| ):(
+  \_|   |_/
+ (__| |__)"#;
 
 fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str {
     if !settled {
@@ -310,7 +332,7 @@ fn draw(
         let (main, cat_area) = {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(1), Constraint::Length(14)])
+                .constraints([Constraint::Min(1), Constraint::Length(13)])
                 .split(chunks[0]);
             (cols[0], cols[1])
         };
@@ -538,7 +560,8 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("meow"), "happy cat missing: {text}");
+        assert!(text.contains("> ω <"), "happy mouth missing: {text}");
+        assert!(text.contains(") ~"), "happy collar tail missing: {text}");
 
         // one failure: grumpy
         let out = BepOutput {
@@ -567,7 +590,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("( T"), "grumpy cat missing: {text}");
+        assert!(text.contains("(  x.x  )"), "grumpy cat missing: {text}");
     }
 
     #[test]
