@@ -87,7 +87,6 @@ pub async fn build_cmd(
 ) -> anyhow::Result<ExitCode> {
     let ctx = Ctx::exec(cli, false, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
-    let pending = labels.clone();
     let build_spec = spec(labels, passthrough);
     let result = if dashboard(cli) {
         // the dashboard is how a build runs on a terminal
@@ -95,7 +94,7 @@ pub async fn build_cmd(
             .runner
             .exec_build_fork(ctx.pv(), &build_spec, true)
             .await?;
-        tui::run(tui::DashMode::Build, child, pending).await?
+        tui::run(child, "build").await?
     } else {
         ctx.runner.exec_build(ctx.pv(), &build_spec).await?
     };
@@ -125,7 +124,7 @@ pub async fn test_cmd(
             .runner
             .exec_test_fork(ctx.pv(), &test_spec, true)
             .await?;
-        tui::run(tui::DashMode::Test, child, labels).await?
+        tui::run(child, "test").await?
     } else {
         ctx.runner.exec_test(ctx.pv(), &test_spec).await?
     };
@@ -248,14 +247,13 @@ pub async fn coverage_cmd(
 ) -> anyhow::Result<ExitCode> {
     let ctx = Ctx::exec(cli, false, true).await?;
     let labels = default_labels(ctx.snapshot()?, labels)?;
-    let pending = labels.clone();
     let cov_spec = spec(labels, passthrough);
     let result = if dashboard(cli) {
         let child = ctx
             .runner
             .exec_coverage_fork(ctx.pv(), &cov_spec, true)
             .await?;
-        tui::run(tui::DashMode::Build, child, pending).await?
+        tui::run(child, "build").await?
     } else {
         ctx.runner.exec_coverage(ctx.pv(), &cov_spec).await?
     };
@@ -332,7 +330,7 @@ pub async fn recipes_cmd(cli: &Cli, run: Option<String>, json: bool) -> anyhow::
                 // acceptance/unit recipes run their target; no extra filter
                 let result = if dashboard(cli) {
                     let child = runner.exec_test_fork(&pv, &exec_spec, true).await?;
-                    tui::run(tui::DashMode::Test, child, exec_spec.labels.clone()).await?
+                    tui::run(child, "test").await?
                 } else {
                     runner.exec_test(&pv, &exec_spec).await?
                 };
@@ -341,7 +339,7 @@ pub async fn recipes_cmd(cli: &Cli, run: Option<String>, json: bool) -> anyhow::
             } else if recipe.command == "build" {
                 let result = if dashboard(cli) {
                     let child = runner.exec_build_fork(&pv, &exec_spec, true).await?;
-                    tui::run(tui::DashMode::Build, child, exec_spec.labels.clone()).await?
+                    tui::run(child, "build").await?
                 } else {
                     runner.exec_build(&pv, &exec_spec).await?
                 };

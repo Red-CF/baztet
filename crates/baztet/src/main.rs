@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 mod ctx;
+mod sprites;
 mod tui;
 mod ui;
 
