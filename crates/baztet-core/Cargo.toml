@@ -11,10 +11,10 @@ homepage.workspace = true
 [dependencies]
 indicatif.workspace = true
 rayon.workspace = true
-baztet-protos = { path = "../baztet-protos", version = "1.2.1" }
-baztet-bep = { path = "../baztet-bep", version = "1.2.1" }
-baztet-projectview = { path = "../baztet-projectview", version = "1.2.1" }
-baztet-snapshot = { path = "../baztet-snapshot", version = "1.2.1" }
+baztet-protos = { path = "../baztet-protos", version = "1.2.2" }
+baztet-bep = { path = "../baztet-bep", version = "1.2.2" }
+baztet-projectview = { path = "../baztet-projectview", version = "1.2.2" }
+baztet-snapshot = { path = "../baztet-snapshot", version = "1.2.2" }
 prost.workspace = true
 prost-types.workspace = true
 prost-reflect.workspace = true
