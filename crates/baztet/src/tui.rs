@@ -1,39 +1,32 @@
-use std::io::Read;
-use std::time::{Duration, Instant};
+//! The live dashboard: alt screen over the forked bazel command, with the
+//! verdict list and a cat walking beneath it while bazel works.
+
+use std::time::Duration;
 
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     crossterm,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    widgets::{Block, Cell, Paragraph, Row, Table},
+    text::{Line, Span},
+    widgets::{Block, Paragraph},
     Terminal,
 };
 
+use crate::sprites::WalkingCat;
 use baztet_core::baztet_bep::BepOutput;
 use baztet_core::exec::{ExecChild, ExecResult};
 
-/// Which command the dashboard mirrors: `test` shows BEP verdicts,
-/// `build`/`coverage` show target completions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DashMode {
-    Test,
-    Build,
-}
-
-/// A forked bazel command driven through the alt screen; returns the same
+/// Forked bazel command driven through the alt screen; returns the same
 /// [`ExecResult`] the non-dashboard path would have produced, terminal
-/// restored on every exit path.
-pub async fn run(
-    mode: DashMode,
-    child: ExecChild,
-    pending: Vec<String>,
-) -> anyhow::Result<ExecResult> {
+/// restored on every exit path. `title` names the command on screen.
+pub async fn run(child: ExecChild, title: &str) -> anyhow::Result<ExecResult> {
     let mut terminal = TuiTerminal::enter()?;
-    let result = terminal.drive(mode, child, pending).await;
+    let result = terminal.drive(child, title).await;
     drop(terminal);
     result
 }
+
 /// Owns the alt-screen/raw-mode pair until dropped.
 struct TuiTerminal {
     terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -53,16 +46,9 @@ impl TuiTerminal {
         Ok(Self { terminal })
     }
 
-    async fn drive(
-        &mut self,
-        mode: DashMode,
-        child: ExecChild,
-        pending: Vec<String>,
-    ) -> anyhow::Result<ExecResult> {
-        let started = Instant::now();
-        let bep_path = child.bep_path().to_owned();
-        // clone before the move: the dashboard's live progress lives in the
-        // console capture, and the waiter task consumes the ExecChild
+    async fn drive(&mut self, child: ExecChild, title: &str) -> anyhow::Result<ExecResult> {
+        // the live progress lives in the console capture; the waiter task
+        // consumes the ExecChild (its wait() reads the sidecar from inside)
         let console = child.console_handle();
         // Option: awaiting consumes the handle; ownership back-checks the
         // early-abort path in the loop below
@@ -70,16 +56,15 @@ impl TuiTerminal {
             child.wait().await.map_err(anyhow::Error::from)
         }));
         let mut state = BepOutput::default();
-        let mut offset = 0usize;
+        let (tw, th) = crossterm::terminal::size().unwrap_or((80, 24));
+        let mut walker = WalkingCat::new(tw, th);
         // the loop breaks through several paths; if it bails out early the
         // waiter still owns the live Child — aborting drops the Child and
         // kill_on_drop terminates bazel
         let outcome: anyhow::Result<ExecResult> = loop {
             if waiter.as_ref().unwrap().is_finished() {
                 // the waiter's wait() already read and deleted the sidecar;
-                // the completed verdicts are in the result's BEP output —
-                // draw this final frame so the dashboard closes showing the
-                // run's state, not a mid-run one
+                // the completed verdicts are in the result's BEP output
                 let result = match waiter.take().unwrap().await {
                     Ok(Ok(res)) => Ok(res),
                     Ok(Err(e)) => Err(e),
@@ -92,17 +77,16 @@ impl TuiTerminal {
                 }
                 let _ = draw(
                     &mut self.terminal,
-                    mode,
                     &state,
-                    pending.len(),
-                    started.elapsed(),
+                    walker.as_ref(),
                     &console,
+                    title,
+                    true,
                 );
                 break result;
             }
-            // read only when poll says an event is ready: a bare read blocks
-            // forever when no key was pressed, freezing the whole draw loop
-            let key_ready = match crossterm::event::poll(Duration::from_millis(200)) {
+            // walk at ~120ms per frame: 8 frames ≈ 1s per crossing half
+            let key_ready = match crossterm::event::poll(Duration::from_millis(120)) {
                 Ok(ready) => ready,
                 Err(e) => break Err(e.into()),
             };
@@ -117,7 +101,7 @@ impl TuiTerminal {
                                     && k.code == crossterm::event::KeyCode::Char('c')));
                         if quit {
                             if waiter.as_ref().unwrap().is_finished() {
-                                // bazel exited in the poll window: take the real
+                                // bazel exited in the window: take the real
                                 // result instead of fabricating a cancellation
                                 break match waiter.take().unwrap().await {
                                     Ok(Ok(res)) => Ok(res),
@@ -125,9 +109,10 @@ impl TuiTerminal {
                                     Err(e) => Err(e.into()),
                                 };
                             }
-                            // capture what bazel wrote so far, then kill it
+                            // then kill it: the capture already holds the
+                            // live console; the sidecar only exists at
+                            // bazel's exit
                             waiter.as_ref().unwrap().abort();
-                            ingest(&mut state, &bep_path, offset);
                             break Ok(ExecResult {
                                 code: 130,
                                 bep: Some(state),
@@ -135,21 +120,24 @@ impl TuiTerminal {
                             });
                         }
                     }
-                    Err(e) => break Err(e.into()),
+                    Ok(crossterm::event::Event::Resize(w, h)) => {
+                        // re-pick the sprite size; never panic on odd sizes
+                        walker = WalkingCat::new(w, h);
+                    }
                     _ => {}
                 }
             }
-            offset = ingest(&mut state, &bep_path, offset);
-            if let Err(e) = draw(
-                &mut self.terminal,
-                mode,
-                &state,
-                pending.len(),
-                started.elapsed(),
-                &console,
-            ) {
-                break Err(e);
+            if let Some(g) = walker.as_mut() {
+                g.tick();
             }
+            draw(
+                &mut self.terminal,
+                &state,
+                walker.as_ref(),
+                &console,
+                title,
+                false,
+            )?;
         };
         if outcome.is_err() {
             if let Some(h) = waiter.as_ref() {
@@ -158,28 +146,6 @@ impl TuiTerminal {
         }
         outcome
     }
-}
-
-/// Read and decode the BEP bytes appended since `offset`; returns the new
-/// cursor. The sidecar is written whole at bazel's exit, so this mostly
-/// serves mid-write tails and the quit path; the completed state comes
-/// from the waiter's parsed result instead.
-fn ingest(state: &mut BepOutput, path: &std::path::Path, offset: usize) -> usize {
-    use std::io::{Seek, SeekFrom};
-    if let Ok(mut f) = std::fs::File::open(path) {
-        if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
-            let mut buf = Vec::new();
-            if f.read_to_end(&mut buf).is_ok() {
-                // a truncated tail is normal mid-write: keep the old
-                // state and the cursor where it was
-                if let Ok((delta, consumed)) = baztet_core::baztet_bep::parse_prefix(&buf, 0) {
-                    state.extend(delta);
-                    return offset + consumed;
-                }
-            }
-        }
-    }
-    offset
 }
 
 impl Drop for TuiTerminal {
@@ -197,217 +163,125 @@ fn restore() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
-/// Custom Bastet design, tight proportions (the classic face the
-/// terminal reads well) with depth: whiskers, the jewelled collar, and a
-/// tail that swishes per frame. Eyes carry the motion: alert, blink,
-/// side-glance, content squint.
-const CAT_RUNNING: [&str; 4] = [
-    r#"  /\_/\
-=( o.o )=
-  > ^ <
-   | |
- ( |*=*| )
- (\_| |_)  "#,
-    r#"  /\_/\
-=( -.- )=
-  > ^ <
-   | |
- ( |*=*| )
-(_|   |_)"#,
-    r#"  /\_/\
-=( o.O )=
-  > ^ <
-   | |
- ( |*=*| )
-(__| |_)  "#,
-    r#"  /\_/\
-=( ^.^. )=
-  > w <
-   | |
- ( |*=*| )
- (\_/ \_)"#,
-];
-const CAT_HAPPY: &str = r#"  /\_/\
-=( ^.^ )=
-  > ω <
-   | |
- ( |*=*| ) ~
- (\_/ \_)
-  ~ meow ~"#;
-const CAT_GRUMPY: &str = r#"  /\_/\
-=( x.x )=
-  >___<
-   | |
- ( |*=*| ):(
- (__| |__)
-  ~grumpy~"#;
-
-fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str {
-    if !settled {
-        let idx = (elapsed.as_millis() / 300) as usize % CAT_RUNNING.len();
-        CAT_RUNNING[idx]
-    } else if any_failed {
-        CAT_GRUMPY
-    } else {
-        CAT_HAPPY
-    }
-}
-
 fn draw<B>(
     terminal: &mut Terminal<B>,
-    mode: DashMode,
     out: &BepOutput,
-    requested: usize,
-    elapsed: Duration,
+    walker: Option<&WalkingCat>,
     console: &baztet_core::exec::ConsoleCapture,
+    title: &str,
+    settled: bool,
 ) -> anyhow::Result<()>
 where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let (done, mut rows): (usize, Vec<Row>) = match mode {
-        DashMode::Test => {
-            let rows: Vec<Row> = out
-                .test_summaries
-                .iter()
-                .map(|s| {
-                    Row::new([Cell::from(s.label.clone()), Cell::from(s.status.clone())])
-                        .style(test_style(&s.status))
-                })
-                .collect();
-            (out.test_summaries.len(), rows)
-        }
-        // build rows: failures first, then completions, then the running tail
-        DashMode::Build => {
-            let mut failures: Vec<Row> = Vec::new();
-            let mut built: Vec<Row> = Vec::new();
-            out.target_status.iter().for_each(|(label, success)| {
-                let verdict = |txt: &str| {
-                    Row::new([Cell::from(label.clone()), Cell::from(txt.to_string())]).style(
-                        if *success {
-                            Style::new().fg(Color::Green)
-                        } else {
-                            Style::new().fg(Color::Red)
-                        },
-                    )
-                };
-                if *success {
-                    built.push(verdict("BUILT"));
-                } else {
-                    failures.push(verdict("FAILED"));
-                }
-            });
-            let done = out.target_status.len();
-            (done, [failures, built].concat())
-        }
-    };
-    // the denominator is the requested list: it never grows while targets finish
-    let total = requested.max(done);
-    let header = format!(
-        " baztet {} — {done}/{total} targets · {:.0}s",
-        mode_title(mode),
-        elapsed.as_secs_f64()
-    );
-    if requested > done {
-        rows.push(
-            Row::new([Cell::from(format!(
-                "… {} still running/pending",
-                requested - done
-            ))])
-            .style(Style::new().dim()),
-        );
-    }
-    let settled = requested > 0 && done >= requested;
-    let any_failed = match mode {
-        DashMode::Test => out
-            .test_summaries
-            .iter()
-            .any(|s| test_style(&s.status).fg == Some(Color::Red)),
-        DashMode::Build => out.target_status.values().any(|ok| !ok),
-    };
     terminal.draw(|f| {
+        let sprite_h = walker.map(|g| g.size.dims().1).unwrap_or(0);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .constraints([Constraint::Min(1), Constraint::Length(2 + sprite_h)])
             .split(f.area());
-        let (main, cat_area) = {
-            let cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(1), Constraint::Length(13)])
-                .split(chunks[0]);
-            (cols[0], cols[1])
-        };
-        let cat = cat_frame(elapsed, settled, any_failed);
-        f.render_widget(
-            Paragraph::new(cat).style(Style::new().fg(Color::Yellow)),
-            cat_area,
-        );
-        let table = Table::new(
-            rows,
-            [Constraint::Percentage(75), Constraint::Percentage(25)],
-        )
-        .header(Row::new(["target", "status"]).style(Style::new().bold().fg(Color::Yellow)))
-        .block(
+
+        // verdict list, gold frame
+        let mut rows: Vec<Line> = Vec::new();
+        for s in &out.test_summaries {
+            rows.push(Line::from(format!(" {:<48} {}", s.label, s.status)));
+        }
+        if rows.is_empty() {
+            rows.push(Line::from(Span::styled(
+                " waiting for the first verdicts…",
+                Style::new().dim(),
+            )));
+        }
+        let list = Paragraph::new(rows).block(
             Block::bordered()
-                .title(header)
+                .title(format!(" baztet {title} — live "))
                 .title_style(Style::new().bold().fg(Color::Yellow))
                 .border_style(Style::new().fg(Color::DarkGray)),
         );
-        f.render_widget(table, main);
-        // live bazel progress in the footer: the console is the streaming
-        // source (the BEP sidecar is written whole at exit)
-        let progress = console.last_progress();
-        let footer = if progress.is_empty() {
-            "q / ctrl-c cancels bazel".to_string()
+        f.render_widget(list, chunks[0]);
+
+        // strip: bazel's progress + the cat walking underneath
+        let mut strip: Vec<Line> = vec![Line::from(Span::styled(
+            console.last_progress(),
+            Style::new().dim(),
+        ))];
+        if let Some(walker) = walker {
+            for l in walker.frame_lines() {
+                strip.push(Line::from(Span::styled(
+                    l.clone(),
+                    // the sprite wears the Bastet gold the dashboard's frame already wears;
+                    // a single color for all cells keeps the density-shading effect intact
+                    Style::new().fg(Color::Rgb(0xE5, 0xC0, 0x6B)),
+                )));
+            }
         } else {
-            format!("q cancels bazel · {progress}")
-        };
-        f.render_widget(Paragraph::new(footer).style(Style::new().dim()), chunks[1]);
+            strip.push(Line::from(""));
+        }
+        if settled {
+            strip.push(Line::from(Span::styled(
+                if out.target_status.values().any(|ok| !ok) {
+                    " ~ grumpy ~"
+                } else {
+                    " ~ meow ~"
+                },
+                Style::new().fg(if out.target_status.values().any(|ok| !ok) {
+                    Color::Red
+                } else {
+                    Color::Green
+                }),
+            )));
+        }
+        f.render_widget(Paragraph::new(strip), chunks[1]);
     })?;
     Ok(())
-}
-
-fn test_style(status: &str) -> Style {
-    match status {
-        "PASSED" => Style::new().fg(Color::Green),
-        "FAILED" | "TIMEOUT" | "ERROR" => Style::new().fg(Color::Red),
-        "FLAKY" => Style::new().fg(Color::Yellow),
-        _ => Style::new(),
-    }
-}
-
-fn mode_title(mode: DashMode) -> &'static str {
-    match mode {
-        DashMode::Test => "test",
-        DashMode::Build => "build/coverage",
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baztet_core::baztet_bep::TestSummary;
     use ratatui::backend::TestBackend;
 
+    /// Tail-ingest primitive, test-only: reads the sidecar from `offset`.
+    /// The live dashboard feeds from the console capture instead.
+    fn ingest(state: &mut BepOutput, path: &std::path::Path, offset: usize) -> usize {
+        use std::io::{Read, Seek, SeekFrom};
+        if let Ok(mut f) = std::fs::File::open(path) {
+            if f.seek(SeekFrom::Start(offset as u64)).is_ok() {
+                let mut buf = Vec::new();
+                if f.read_to_end(&mut buf).is_ok() {
+                    // a truncated tail is normal mid-write: keep the old
+                    // state and the cursor where it was
+                    if let Ok((delta, consumed)) = baztet_core::baztet_bep::parse_prefix(&buf, 0) {
+                        state.extend(delta);
+                        return offset + consumed;
+                    }
+                }
+            }
+        }
+        offset
+    }
+
     #[test]
-    fn dashboard_rows_by_mode() {
-        let out = BepOutput {
-            target_status: [
-                ("//a:good".to_string(), true),
-                ("//a:bad".to_string(), false),
-            ]
-            .into(),
-            ..BepOutput::default()
-        };
-        let backend = TestBackend::new(60, 12);
+    fn dashboard_lists_verdicts_and_walks() {
+        let mut out = BepOutput::default();
+        out.test_summaries
+            .push(baztet_core::baztet_bep::TestSummary {
+                label: "//a:one".into(),
+                status: "PASSED".into(),
+            });
+        out.target_status.insert("//a:two".into(), true);
+
+        let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
+        let walker = WalkingCat::new(80, 20).unwrap();
         draw(
             &mut terminal,
-            DashMode::Build,
             &out,
-            5,
-            Duration::from_secs(3),
+            Some(&walker),
             &baztet_core::exec::ConsoleCapture::default(),
+            "test",
+            true,
         )
         .unwrap();
         let text: String = terminal
@@ -417,17 +291,17 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("//a:bad"), "failure row missing: {text}");
-        assert!(text.contains("FAILED"), "FAILED verdict missing: {text}");
-        assert!(text.contains("2/5 targets"), "header got: {text}");
-        assert!(text.contains("3 still running"), "pending missing: {text}");
+        assert!(text.contains("//a:one"), "verdict row missing: {text}");
+        assert!(text.contains("PASSED"), "verdict missing: {text}");
+        assert!(text.contains("meow"), "goodbye missing: {text}");
     }
 
-    fn summary(label: &str, status: &str) -> TestSummary {
-        TestSummary {
-            label: label.to_string(),
-            status: status.to_string(),
-        }
+    #[test]
+    fn sprite_size_falls_back_on_narrow_terminals() {
+        // nothing fits: the animation omits itself, no broken draw
+        assert!(WalkingCat::new(20, 10).is_none());
+        // small fits
+        assert!(WalkingCat::new(30, 15).is_some());
     }
 
     #[test]
@@ -443,8 +317,7 @@ mod tests {
                 .as_nanos()
         ));
         let mut f = std::fs::File::create(&path).unwrap();
-        // frame 1 written first; ingest at offset 0 → whole state
-        let frame1 = build_started_frame();
+        let frame1 = baztet_core::baztet_bep::testing::framed_started(4242, "stub");
         f.write_all(&frame1).unwrap();
         f.sync_all().unwrap();
         let mut state = BepOutput::default();
@@ -452,13 +325,11 @@ mod tests {
         assert_eq!(off, frame1.len());
         assert_eq!(state.server_pid, Some(4242));
 
-        // frame 2 appended; ingesting from the cursor picks up only the tail
-        let frame2 = build_started_frame2();
+        let frame2 = baztet_core::baztet_bep::testing::framed_started(5, "x");
         f.write_all(&frame2).unwrap();
         f.sync_all().unwrap();
         let off2 = ingest(&mut state, &path, off);
         assert_eq!(off2, frame1.len() + frame2.len());
-        // the last Started event wins, as in a real rebuild
         assert_eq!(state.server_pid, Some(5));
 
         // a truncated tail stops the cursor without error and keeps state
@@ -466,146 +337,7 @@ mod tests {
         f.sync_all().unwrap();
         let off3 = ingest(&mut state, &path, off2);
         assert_eq!(off3, off2);
-        // truncated tail: the previous state stands
         assert_eq!(state.server_pid, Some(5));
         let _ = std::fs::remove_file(&path);
-    }
-
-    fn build_started_frame() -> Vec<u8> {
-        baztet_core::baztet_bep::testing::framed_started(4242, "release 9.3.1-stub")
-    }
-
-    fn build_started_frame2() -> Vec<u8> {
-        baztet_core::baztet_bep::testing::framed_started(5, "x")
-    }
-
-    #[test]
-    fn header_denominator_stabilizes() {
-        let requested = 10;
-        let out = BepOutput {
-            test_summaries: [summary("//a:one", "PASSED"), summary("//a:two", "FAILED")].into(),
-            ..BepOutput::default()
-        };
-        let backend = TestBackend::new(60, 8);
-        let mut terminal = Terminal::new(backend).unwrap();
-        draw(
-            &mut terminal,
-            DashMode::Test,
-            &out,
-            requested,
-            Duration::from_secs(5),
-            &baztet_core::exec::ConsoleCapture::default(),
-        )
-        .unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        assert!(text.contains("2/10 targets"), "header got: {text}");
-        assert!(text.contains("//a:one"), "row missing: {text}");
-        assert!(
-            text.contains("8 still running"),
-            "pending row missing: {text}"
-        );
-    }
-
-    #[test]
-    fn header_shows_full_when_all_finish() {
-        let requested = 2;
-        let out = BepOutput {
-            test_summaries: [summary("//a:one", "PASSED"), summary("//a:two", "FLAKY")].into(),
-            ..BepOutput::default()
-        };
-        let backend = TestBackend::new(60, 8);
-        let mut terminal = Terminal::new(backend).unwrap();
-        draw(
-            &mut terminal,
-            DashMode::Test,
-            &out,
-            requested,
-            Duration::from_secs(9),
-            &baztet_core::exec::ConsoleCapture::default(),
-        )
-        .unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        assert!(text.contains("2/2 targets"), "header got: {text}");
-        assert!(!text.contains("still running"), "leftover: {text}");
-    }
-
-    #[test]
-    fn cat_reacts_to_verdicts() {
-        // all built: happy goodbye
-        let out = BepOutput {
-            target_status: [("//a:one".to_string(), true), ("//a:two".to_string(), true)].into(),
-            ..BepOutput::default()
-        };
-        let backend = TestBackend::new(60, 12);
-        let mut terminal = Terminal::new(backend).unwrap();
-        draw(
-            &mut terminal,
-            DashMode::Build,
-            &out,
-            2,
-            Duration::from_secs(3),
-            &baztet_core::exec::ConsoleCapture::default(),
-        )
-        .unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        assert!(text.contains("> ω <"), "happy mouth missing: {text}");
-        assert!(text.contains(") ~"), "happy collar tail missing: {text}");
-
-        // one failure: grumpy
-        let out = BepOutput {
-            target_status: [
-                ("//a:one".to_string(), true),
-                ("//a:two".to_string(), false),
-            ]
-            .into(),
-            ..BepOutput::default()
-        };
-        let backend = TestBackend::new(60, 12);
-        let mut terminal = Terminal::new(backend).unwrap();
-        draw(
-            &mut terminal,
-            DashMode::Build,
-            &out,
-            2,
-            Duration::from_secs(3),
-            &baztet_core::exec::ConsoleCapture::default(),
-        )
-        .unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        assert!(text.contains("( x.x )"), "grumpy cat missing: {text}");
-    }
-
-    #[test]
-    fn test_statuses_map_to_verdicts() {
-        assert_eq!(test_style("PASSED").fg, Some(Color::Green));
-        assert_eq!(test_style("FAILED").fg, Some(Color::Red));
-        assert_eq!(test_style("TIMEOUT").fg, Some(Color::Red));
-        assert_eq!(test_style("ERROR").fg, Some(Color::Red));
-        assert_eq!(test_style("FLAKY").fg, Some(Color::Yellow));
-        assert_eq!(test_style("NO_STATUS").fg, None);
     }
 }

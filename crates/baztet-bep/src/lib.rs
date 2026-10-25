@@ -599,6 +599,25 @@ mod tests {
     }
 
     #[test]
+    fn framed_target_status_encodes_both_polarities() {
+        let out = parse(&framed(&[])).unwrap_or_default();
+        let _ = out;
+        use super::testing::framed_target_status;
+        assert_eq!(
+            parse(&framed_target_status("//a:b", false))
+                .unwrap()
+                .target_status,
+            [("//a:b".to_string(), false)].into_iter().collect()
+        );
+        assert_eq!(
+            parse(&framed_target_status("//a:c", true))
+                .unwrap()
+                .target_status,
+            [("//a:c".to_string(), true)].into_iter().collect()
+        );
+    }
+
+    #[test]
     fn prefix_then_extend_reaches_full_parse() {
         let bytes = framed(&[started_event()]);
         let full = parse(&bytes).unwrap();
@@ -647,7 +666,7 @@ pub mod testing {
         out
     }
 
-    pub fn framed_target_status(label: &str, _success: bool) -> Vec<u8> {
+    pub fn framed_target_status(label: &str, success: bool) -> Vec<u8> {
         let event = bes::BuildEvent {
             id: Some(bes::BuildEventId {
                 id: Some(bes::build_event_id::Id::TargetCompleted(
@@ -659,7 +678,7 @@ pub mod testing {
                 )),
             }),
             payload: Some(bes::build_event::Payload::Completed(bes::TargetComplete {
-                success: true,
+                success,
                 ..Default::default()
             })),
             ..Default::default()

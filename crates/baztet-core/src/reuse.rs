@@ -49,6 +49,9 @@ pub struct CurrentFacts {
     pub pkg_mtimes: BTreeMap<String, u64>,
     /// whether the project view has `directories:` entries
     pub directories_configured: bool,
+    /// whether directories actually derive targets (`derive_targets_
+    /// from_directories`): with it off the walker never ran
+    pub derive_on: bool,
 }
 
 /// Pure reuse-ladder decision over recorded snapshot facts vs the current run.
@@ -83,10 +86,13 @@ pub fn decide_reuse(
                 _ => false,
             },
         }
-    } else {
-        // directories configured but the walk found nothing: BUILD files
+    } else if current.derive_on {
+        // directories configured, walker ran, found nothing: BUILD files
         // gone, the graph is stale
         false
+    } else {
+        // directories listed but not deriving: no walker, nothing drifts
+        true
     };
     if !build_fresh {
         return Reuse::FullQuery;
@@ -130,7 +136,25 @@ mod tests {
             build_mtime: max,
             pkg_mtimes: pkgs,
             directories_configured: dirs,
+            derive_on: true,
         }
+    }
+
+    #[test]
+    fn derive_off_never_drifts_even_with_directories() {
+        // directories listed but derive_targets_from_directories: false:
+        // every sync reuses (the walker did not run)
+        let recorded = facts(None, map_of(&[]));
+        let current = CurrentFacts {
+            build_mtime: None,
+            pkg_mtimes: map_of(&[]),
+            directories_configured: true,
+            derive_on: false,
+        };
+        assert_eq!(
+            decide_reuse(true, &recorded, &current, true, true),
+            Reuse::Everything
+        );
     }
 
     fn map_of(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
