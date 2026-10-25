@@ -232,22 +232,26 @@ pub fn parse_status(line: &str) -> (Option<(u64, u64)>, Option<String>) {
     (fraction, active)
 }
 
-/// The strip's bar: filled fraction in purple, the rest as a track.
+/// The strip's bar: solid block fill in purple, dim dotted track behind it.
+/// Glyph and color both differ, so the fill reads even on faint terminals.
 pub fn bar_line(fraction: Option<(u64, u64)>, width: usize) -> Line<'static> {
     let Some((done, total)) = fraction.filter(|(_, t)| *t > 0) else {
         return Line::from(Span::styled(
-            "─".repeat(width),
-            Style::new().fg(Color::DarkGray),
+            "░".repeat(width),
+            Style::new().fg(Color::Rgb(0x5A, 0x4A, 0x73)),
         ));
     };
     let filled = ((done as f64 / total as f64) * width as f64).round() as usize;
     let filled = filled.min(width);
     Line::from(vec![
         Span::styled(
-            "━".repeat(filled),
+            "█".repeat(filled),
             Style::new().fg(Color::Rgb(0xB0, 0x7C, 0xFF)),
         ),
-        Span::styled("━".repeat(width - filled), Style::new().fg(Color::DarkGray)),
+        Span::styled(
+            "░".repeat(width - filled),
+            Style::new().fg(Color::Rgb(0x5A, 0x4A, 0x73)),
+        ),
     ])
 }
 
@@ -370,11 +374,16 @@ where
             bar_line(fraction, tw.saturating_sub(6) as usize),
         ];
         if let Some(walker) = walker {
+            // the cat walks the whole strip: shift the sprite to its live
+            // column; ratatui clips whatever sticks out on the right, and
+            // a negative lead clamps at the left edge
+            let (w, _) = walker.size.dims();
+            let col = walker.pos.clamp(0, tw as i32 - w as i32).max(0) as usize;
             for l in walker.frame_lines() {
                 strip.push(Line::from(Span::styled(
-                    l.clone(),
-                    // the sprite wears the Bastet gold the dashboard's frame already wears;
-                    // a single color for all cells keeps the density-shading effect intact
+                    format!("{}{}", " ".repeat(col), l),
+                    // the sprite wears the Bastet gold; one color for all
+                    // cells keeps the density-shading effect intact
                     Style::new().fg(Color::Rgb(0xE5, 0xC0, 0x6B)),
                 )));
             }
@@ -459,6 +468,53 @@ mod tests {
         assert!(text.contains("//a:one"), "verdict row missing: {text}");
         assert!(text.contains("PASSED"), "verdict missing: {text}");
         assert!(text.contains("meow"), "goodbye missing: {text}");
+    }
+
+    #[test]
+    fn cat_frames_render_at_their_live_column() {
+        // the sprite follows pos: the walking cat actually crosses the strip
+        let mut walker = WalkingCat::new(80, 20).unwrap();
+        for _ in 0..25 {
+            walker.tick();
+        }
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        draw(
+            &mut terminal,
+            &BepOutput::default(),
+            Some(&walker),
+            &baztet_core::exec::ConsoleCapture::default(),
+            "test",
+            false,
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        // sprite row is the last strip row: its lead edge is past column 25,
+        // so the left quarter of that row holds only spaces
+        let line = terminal.backend().buffer().content();
+        let row0 = (20 - 1) * 80;
+        assert!(
+            line[row0..row0 + 25].iter().all(|c| c.symbol() == " "),
+            "sprite sits at column 0 after walking right: {:?}",
+            line[row0..row0 + 40]
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        );
+    }
+
+    #[test]
+    fn bar_fill_block_vs_dotted_track() {
+        let bar = bar_line(Some((2101, 4278)), 40);
+        let span_widths: Vec<usize> = bar
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .collect();
+        assert_eq!(span_widths, vec![20, 20]);
+        assert_eq!(bar.spans[0].content.chars().next(), Some('█'));
+        assert_eq!(bar.spans[1].content.chars().next(), Some('░'));
+        assert_ne!(bar.spans[0].content, bar.spans[1].content);
     }
 
     #[test]
