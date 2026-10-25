@@ -5,7 +5,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     crossterm,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style, Stylize},
+    style::{Color, Style},
     widgets::{Block, Cell, Paragraph, Row, Table},
     Terminal,
 };
@@ -253,14 +253,18 @@ fn cat_frame(elapsed: Duration, settled: bool, any_failed: bool) -> &'static str
     }
 }
 
-fn draw(
-    terminal: &mut Terminal<impl Backend>,
+fn draw<B>(
+    terminal: &mut Terminal<B>,
     mode: DashMode,
     out: &BepOutput,
     requested: usize,
     elapsed: Duration,
     console: &baztet_core::exec::ConsoleCapture,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let (done, mut rows): (usize, Vec<Row>) = match mode {
         DashMode::Test => {
             let rows: Vec<Row> = out
@@ -342,10 +346,7 @@ fn draw(
             rows,
             [Constraint::Percentage(75), Constraint::Percentage(25)],
         )
-        .header(
-            Row::new(["target", "status"])
-                .style(Style::new().bold().fg(Color::Yellow)),
-        )
+        .header(Row::new(["target", "status"]).style(Style::new().bold().fg(Color::Yellow)))
         .block(
             Block::bordered()
                 .title(header)
@@ -361,10 +362,7 @@ fn draw(
         } else {
             format!("q cancels bazel · {progress}")
         };
-        f.render_widget(
-            Paragraph::new(footer).style(Style::new().dim()),
-            chunks[1],
-        );
+        f.render_widget(Paragraph::new(footer).style(Style::new().dim()), chunks[1]);
     })?;
     Ok(())
 }
