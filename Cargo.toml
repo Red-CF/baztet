@@ -35,7 +35,7 @@ quick-xml = "0.42"
 rayon = "1"
 mimalloc = "0.1"
 owo-colors = "4"
-indicatif = "0.17"
+indicatif = "0.18"
 ratatui = "0.30"
 
 [profile.release]
