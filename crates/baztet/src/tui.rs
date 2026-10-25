@@ -177,8 +177,17 @@ fn restore() {
 pub fn verdict_style(status: &str) -> Style {
     match status {
         "PASSED" | "BUILT" => Style::new().fg(Color::Green),
-        "FAILED" | "TIMEOUT" | "ERROR" => Style::new().fg(Color::Red),
+        // every real failure verdict: a failed-to-build run must not read
+        // as an inert unknown row
+        "FAILED"
+        | "TIMEOUT"
+        | "ERROR"
+        | "FAILED_TO_BUILD"
+        | "INCOMPLETE"
+        | "REMOTE_FAILURE"
+        | "TOOL_HALTED_BEFORE_TESTING" => Style::new().fg(Color::Red),
         "FLAKY" => Style::new().fg(Color::Yellow),
+        // the UNKNOWN(n) fallback and NO_STATUS
         _ => Style::new().fg(Color::Gray),
     }
 }
@@ -270,11 +279,11 @@ where
         let mut active: Option<String> = None;
         for line in console_text.lines().rev() {
             let (f, a) = parse_status(line);
-            if fraction.is_none() {
-                fraction = f;
-            }
-            if active.is_none() {
-                active = a;
+            fraction = fraction.or(f);
+            active = active.or(a);
+            // numbers and target usually ride one line: keep the pair consistent
+            if fraction.is_some() && active.is_some() {
+                break;
             }
         }
         let mut rows: Vec<Line> = Vec::new();
@@ -285,13 +294,18 @@ where
             )));
         }
         let mut failed_rows: Vec<Line> = Vec::new();
+        let mut flaky_rows: Vec<Line> = Vec::new();
         let mut ok_rows: Vec<Line> = Vec::new();
         for s in &out.test_summaries {
             let row = Line::from(Span::styled(
                 format!(" {:<48} {}", s.label, s.status),
                 verdict_style(&s.status),
             ));
-            if s.status != "PASSED" {
+            // a flaky test passed on retry: own bucket between the reds and
+            // the greens, never at the head of the failure block
+            if s.status == "FLAKY" {
+                flaky_rows.push(row);
+            } else if s.status != "PASSED" {
                 failed_rows.push(row);
             } else {
                 ok_rows.push(row);
@@ -310,6 +324,7 @@ where
             }
         }
         rows.extend(failed_rows);
+        rows.extend(flaky_rows);
         rows.extend(ok_rows);
         if rows.is_empty() {
             rows.push(Line::from(Span::styled(

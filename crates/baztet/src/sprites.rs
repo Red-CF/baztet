@@ -89,8 +89,8 @@ fn parse_sheet() -> HashMap<(SpriteSize, Direction), Vec<Frame>> {
     map
 }
 
-/// All parsed frames, parsed once. The loader does NOT pad: the sheet's
-/// lines arrive fixed-width already; the acceptance test below guards it.
+/// All parsed frames, parsed once. The loader pads short body lines UP to
+/// the sheet's declared width; the acceptance test guards the set's dims.
 pub fn sheet() -> &'static HashMap<(SpriteSize, Direction), Vec<Frame>> {
     static SHEETS: OnceLock<HashMap<(SpriteSize, Direction), Vec<Frame>>> = OnceLock::new();
     SHEETS.get_or_init(parse_sheet)
@@ -198,7 +198,7 @@ mod tests {
     fn walk_turns_at_the_edges_without_escape() {
         // a narrow terminal forces the small sprite; ticking from edge to
         // edge flips the direction and never walks outside the bounds
-        // 30x20 fits the mediano sprite (grande needs 36)
+        // 30x20 fits the medium sprite (35-wide gate excludes Large)
         let mut walker = WalkingCat::new(30, 20).unwrap();
         assert_eq!(walker.size, SpriteSize::Medium);
         let mut dir_seen: HashSet<Direction> = HashSet::new();
